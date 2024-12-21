@@ -1,0 +1,2924 @@
+<!doctype html><html lang="en" dir="ltr"><head><meta charset="utf-8"/><title>Netdata</title><script>const CONFIG = {
+      cache: {
+        agentInfo: false,
+        cloudToken: true,
+        agentToken: true,
+      }
+    }
+
+    // STATE MANAGEMENT ======================================================================== //
+    const state = {
+      loading: {
+        spaces: false,
+        rooms: false,
+        claimingToken: false,
+        claimingAgent: false
+      },
+      claim: {
+        status: {},
+        response: {},
+        shouldClaim: false,
+        step: 1,
+        selectedSpaceIds: [],
+        selectedRoomIds: [],
+        privateKey: ""
+      },
+      cache: {
+        spaces: undefined,
+        rooms: {},
+        claimingTokensPerSpace: {}
+      }
+    }
+
+    const getSelectedRooms = state => {
+      const spaceId = state.claim.selectedSpaceIds.length ? state.claim.selectedSpaceIds[0] : null;
+      if (!spaceId) return [];
+      if (state.claim.selectedRoomIds.length) {
+        return state.cache?.rooms?.[spaceId]?.filter(({ id }) => state.claim.selectedRoomIds.includes(id)) || [];
+      }
+      return [];
+    }
+
+    const syncUI = () => {
+      // Elements
+      const splashMessage = document.getElementById("splashMessageContainer");
+      const claiming = document.getElementById("claimingContentsContainer");
+      const step1 = document.getElementById("connectionStep-1");
+      const step2 = document.getElementById("connectionStep-2");
+      const btnPrev = document.getElementById("btnConnectionStepPrev");
+      const btnNext = document.getElementById("btnConnectionStepNext");
+      const btnClaim = document.getElementById("btnClaim");
+      const roomsSelector = document.getElementById("roomsSelector");
+      const claimErrorMessage = document.getElementById("claimErrorMessage");
+
+      // State
+      const { spaces: spacesLoading, rooms: roomsLoading, claimingToken: claimingTokenLoading, claimingAgent: claimingAgentLoading } = state.loading;
+      const { shouldClaim, step, selectedSpaceIds, selectedRoomIds, privateKey } = state.claim;
+      const claimingTokenExists = state.claim.selectedSpaceIds.length ? !!state.cache.claimingTokensPerSpace[state.claim.selectedSpaceIds[0]] : false;
+
+      splashMessage.style.display = !shouldClaim ? "initial" : "none";
+      claiming.style.display = shouldClaim ? "initial" : "none";
+
+      // Loading spaces
+      if (step1) {
+        const spacesLoader = step1.querySelector(".loader");
+        if (spacesLoader) {
+          spacesLoader.style.display = spacesLoading ? "initial" : "none";
+        }
+      }
+
+      // Loading rooms
+      if (roomsSelector) {
+        const message = roomsSelector.querySelector(".selected-items");
+        const selectedRoomNames = getSelectedRooms(state).map(({ name }) => name).join(", ");
+        if (message) {
+          message.innerText = roomsLoading ? "Loading rooms..." : (selectedRoomNames || "Select room");
+        }
+      }
+
+      // Steps visibility
+      step1.style.display = step == 1 ? "initial" : "none";
+      step2.style.display = step == 2 ? "initial" : "none";
+
+      // Rooms
+      if (step == 1) {
+        // Reset rooms
+        const checkboxes = document.getElementById("roomsSelectorOptionsContainer").querySelectorAll('input[type="checkbox"]');
+        checkboxes.forEach((checkbox) => {
+          if (checkbox.checked) {
+            checkbox.checked = false;
+            checkbox.dispatchEvent(new Event("change"));
+          }
+        });
+      }
+
+      if (claimErrorMessage) {
+        claimErrorMessage.style.display = state.claim?.response?.error ? "initial" : "none";
+        claimErrorMessage.innerText = state.claim?.response?.error ? state.claim.response.error : "";
+      }
+
+      // Footer
+      btnPrev.style.opacity = step == 1 ? "0" : "1";
+      btnPrev.style.cursor = step == 1 ? "default" : "pointer";
+      btnPrev.disabled = step == 1;
+      btnNext.style.display = step == 1 ? "initial" : "none";
+      btnNext.disabled = !selectedSpaceIds.length;
+      btnClaim.style.display = step == 2 ? "initial" : "none";
+      btnClaim.disabled = !selectedRoomIds.length || !privateKey || !claimingTokenExists || claimingTokenLoading || claimingAgentLoading;
+      btnClaim.textContent = claimingAgentLoading ? "Claiming..." : "Claim";
+
+      return Promise.resolve();
+    }
+
+    const toggleSpacesLoadingState = isLoading => {
+      state.loading = { ...state.loading, spaces: isLoading };
+      return syncUI();
+    }
+
+    const toggleRoomsLoadingState = isLoading => {
+      state.loading = { ...state.loading, rooms: isLoading };
+      return syncUI();
+    }
+
+    const toggleClaimingTokenLoadingState = isLoading => {
+      state.loading = { ...state.loading, claimingToken: isLoading };
+      return syncUI();
+    }
+
+    const toggleClaimingAgentLoadingState = isLoading => {
+      state.loading = { ...state.loading, claimingAgent: isLoading };
+      return syncUI();
+    }
+
+    const setShouldClaimStatus = shouldClaim => {
+      state.claim = { ...state.claim, shouldClaim };
+      return syncUI();
+    }
+
+    const setClaimStatusState = status => {
+      state.claim = { ...state.claim, status };
+      return syncUI();
+    }
+
+    const setClaimResponseState = response => {
+      state.claim = { ...state.claim, response };
+      return syncUI();
+    }
+
+    const setClaimingStep = async arg => {
+      const nextStep = typeof arg == "function" ? arg(state.claim.step) : arg;
+      state.claim = { ...state.claim, step: nextStep, ...(nextStep == 1 ? { selectedRoomIds: [], privateKey: "" } : {}) };
+      await syncUI();
+      return Promise.resolve(nextStep);
+    }
+
+    const setSelectedSpacesStatus = arg => {
+      const spaceIds = typeof arg == "function" ? arg(state.claim.selectedSpaceIds) : Array.isArray(arg) ? arg : [arg];
+      state.claim = { ...state.claim, selectedSpaceIds: spaceIds, selectedRoomIds: [], privateKey: "" };
+      return syncUI();
+    }
+
+    const setSelectedRoomsStatus = arg => {
+      const roomIds = typeof arg == "function" ? arg(state.claim.selectedRoomIds) : Array.isArray(arg) ? arg : [arg];
+      state.claim = { ...state.claim, selectedRoomIds: roomIds };
+      return syncUI();
+    }
+
+    const setClaimingPrivateKeyState = (value = "") => {
+      state.claim = { ...state.claim, privateKey: value };
+      return syncUI();
+    }
+
+    const cacheSpaces = (spaces) => {
+      if (!spaces) return Promise.resolve([]);
+      state.cache.spaces = spaces;
+      return Promise.resolve(spaces);
+    }
+
+    const cacheRooms = (spaceId, rooms) => {
+      if (!spaceId) return Promise.resolve([]);
+      state.cache.rooms = { ...state.cache.rooms, [spaceId]: rooms };
+      return Promise.resolve(rooms);
+    }
+
+    const cacheClaimingToken = (spaceId, token) => {
+      if (!spaceId || !token) return Promise.resolve();
+      state.cache.claimingTokensPerSpace = { ...state.cache.claimingTokensPerSpace, [spaceId]: token };
+      return Promise.resolve(token);
+    }
+
+    // ========================================================================================= //
+
+    const pathsRegex = /\/(spaces|nodes|overview|alerts|dashboards|anomalies|events|cloud|v3)\/?.*/;
+    function getBasename() {
+      return window.location.origin + window.location.pathname.replace(pathsRegex, "")
+    }
+
+    let goToOld = function(path) {
+      let goToUrl = getBasename() + path;
+      if (path !== "/v3") {
+        let pathsRegex = /(\/(spaces|nodes|overview|alerts|dashboards|anomalies|events|cloud|v3)\/?.*)/
+        if (pathsRegex.test(window.location.origin + window.location.pathname)) {
+          goToUrl = (window.location.origin + window.location.pathname).replace(pathsRegex, "/v3$1")
+        }
+      }
+      window.location.replace(ensureOneSlash(goToUrl + window.location.search))
+    }
+
+    const searchParams = new URLSearchParams(location.search);
+    window.envSettings = {
+      isAgent: true,
+      apiUrl: "https://app.netdata.cloud",
+      cloudUrl: "https://app.netdata.cloud",
+      demoSlug: "netdata-demo",
+      demoFavourites: {"postgresql":["Applications-0_Postgres-1"],"redis":["Applications-0_Redis-1"],"dns-query":["Applications-0_CoreDNS-1"],"http-endpoints":["Applications-0_HTTP_Checks-1"],"nginx":["Applications-0_web_log-1","Applications-0_Nginx-1"],"apache":["Applications-0_Apache-1"],"host-reachability":["Synthetic_Checks-0"],"cassandra":["Applications-0_Cassandra-1"],"coredns":["Applications-0_CoreDNS-1"],"logind":["Applications-0_systemd_LoginD-1"],"iis":["Applications-0_MS_IIS-1"],"active-directory":["Applications-0_MS_Active_Directory-1"],"windows":["Applications-0_Windows-1","Applications-0_MS_Active_Directory-1","Applications-0_MS_IIS-1","Applications-0_MS_SQL-1","Applications-0_MS_Exchange-1","Applications-0__NET_Framework-1"],"docker":["Containers___VMs-0"],"ups":["Hardware___Sensors-0_NUT_UPS-1"]},
+      webpackPublicPath: "" || (getBasename() + "/v3"),
+      agentApiUrl: searchParams.get("agent") || getBasename(),
+      posthogToken: "phc_hnhlqe6D2Q4IcQNrFItaqdXJAxQ8RcHkPAFAp74pubv",
+      version: "7.28.2",
+      tracking: !true,
+      cookieDomain: ".netdata.cloud",
+      onprem: false,
+      isLocal: true,
+      nodeEnv: "production"
+    }
+
+    window.visitedNodes = []
+
+    const getHashValueByKey = key => {
+      return location.hash.substr(1).split("&").find(pair => pair.split("=")[0] == key)?.split("=")[1]
+    }
+
+    // Check cloud token
+    const CLOUD_TOKEN_KEY = "netdataJWT"
+    const redirectUri = getHashValueByKey("redirect_uri")
+    const token = getHashValueByKey("token")
+    if (token) {
+      localStorage.setItem(CLOUD_TOKEN_KEY, token)
+    }
+    if (redirectUri) {
+      location.href = decodeURIComponent(redirectUri)
+    }</script><style>body.netdata-splash {
+      height: 100%;
+      overflow: hidden;
+      background: var(--main-bg);
+      margin: 0;
+      padding: 0;
+      color: var(--text);
+      font-family: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif,
+        "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+    }
+
+    :root {
+      --scrollbar-thumb: #fcfffd;
+      --primary: #00ab44;
+      --text: #93a4a4;
+      --text-dark: #001107;
+      --text-light: #fcfffd;
+      --menu-item: #5b6c6c;
+      --main-bg: #000;
+      --highlight: #00ef5f;
+      --tab-active: #ddffeb;
+      --tab-hover: #d2d9d9;
+      --panel-bg: transparent;
+      --font-small: 14px;
+      --font-medium: 16px;
+      --row-2n: #101313;
+      --border: #00ab4436;
+      --border-neutral: #252c2c;
+      --key-value-table: #93a4a4;
+      --accent: #ddffeb;
+      --module-height: 45vh;
+      --list-option-bg: rgba(12, 15, 15, 0.5);
+      --list-option-selected-bg: #000;
+      --list-option-hover-bg: rgba(12, 15, 15, 1);
+      --footer-height: 70px;
+      --code-bg: #00220e;
+      --progress-bar-height: 2px;
+      background-color: var(--main-bg);
+    }
+
+    :root iframe {
+      border-width: 0;
+    }
+
+    body.netdata-splash.loading .frame-right {
+      display: none;
+    }
+
+    body.netdata-splash.loading .frame-left {
+      grid-column: auto / span 12;
+    }
+
+    body.netdata-splash.loading .sphere-stats-container,
+    body.netdata-splash.loading .head-summary,
+    body.netdata-splash.loading .tabs {
+      display: none;
+    }
+
+    body.netdata-splash.loading .loading-message {
+      display: flex;
+      position: absolute;
+      inset: 0;
+      margin: auto;
+      align-items: center;
+      justify-content: center;
+      color: var(--accent);
+    }
+
+    body.netdata-splash .error {
+      color: #DB162F;
+    }
+
+    body.netdata-splash .loading-message {
+      display: none;
+    }
+
+    body.netdata-splash h1 {
+      font-size: 36px;
+      margin-top: 8px;
+      margin-bottom: 8px;
+      color: var(--text-light);
+      filter: blur(0.6px);
+    }
+
+    body.netdata-splash h2 {
+      font-size: 16px;
+    }
+
+    body.netdata-splash h4 {
+      font-size: 12px;
+      margin-bottom: 12px;
+      margin-top: 8px;
+    }
+
+    body.netdata-splash a:link,
+    body.netdata-splash a:visited,
+    body.netdata-splash a:active {
+      text-decoration: none;
+      color: var(--primary);
+    }
+
+    body.netdata-splash a:hover {
+      color: var(--highlight);
+    }
+
+    body.netdata-splash canvas {
+      display: block;
+    }
+
+    body.netdata-splash code {
+      background: var(--code-bg);
+      color: var(--highlight);
+      border: 1px solid var(--border);
+      border-radius: 2px;
+      padding: 12px;
+      line-break: anywhere;
+      word-break: break-all;
+    }
+
+    body.netdata-splash .text-small {
+      font-size: 12px;
+    }
+
+    body.netdata-splash .logo {
+      filter: drop-shadow(2px 2px 32px rgba(255, 255, 255, 0.7)) blur(1px);
+      opacity: 0.9;
+      width: 150px;
+      height: 150px;
+    }
+
+    body.netdata-splash .claim-message .logo {
+      width: 100px;
+      height: 100px;
+    }
+
+    body.netdata-splash .grid {
+      display: grid;
+      grid-column-gap: 16px;
+      grid-row-gap: 16px;
+      grid-template-columns: repeat(12, 1fr);
+      grid-template-rows: repeat(12, 1fr);
+      grid-auto-rows: min-content;
+    }
+
+    body.netdata-splash .grid-columns-10 {
+      display: grid;
+      grid-column-gap: 16px;
+      grid-row-gap: 16px;
+      grid-template-columns: repeat(10, 1fr);
+    }
+
+    body.netdata-splash .col-span-1 {
+      grid-column: auto / span 1;
+    }
+
+    body.netdata-splash .col-span-2 {
+      grid-column: auto / span 2;
+    }
+
+    body.netdata-splash .col-span-3 {
+      grid-column: auto / span 3;
+    }
+
+    body.netdata-splash .col-span-4 {
+      grid-column: auto / span 4;
+    }
+
+    body.netdata-splash .col-span-5 {
+      grid-column: auto / span 5;
+    }
+
+    body.netdata-splash .col-span-6 {
+      grid-column: auto / span 6;
+    }
+
+    body.netdata-splash .col-span-7 {
+      grid-column: auto / span 7;
+    }
+
+    body.netdata-splash .col-span-8 {
+      grid-column: auto / span 8;
+    }
+
+    body.netdata-splash .col-span-9 {
+      grid-column: auto / span 9;
+    }
+
+    body.netdata-splash .col-span-10 {
+      grid-column: auto / span 10;
+    }
+
+    body.netdata-splash .col-span-11 {
+      grid-column: auto / span 11;
+    }
+
+    body.netdata-splash .col-span-12 {
+      grid-column: auto / span 12;
+    }
+
+    body.netdata-splash .col-start-1 {
+      grid-column-start: 1;
+    }
+
+    body.netdata-splash .col-start-2 {
+      grid-column-start: 2;
+    }
+
+    body.netdata-splash .col-start-3 {
+      grid-column-start: 3;
+    }
+
+    body.netdata-splash .col-start-4 {
+      grid-column-start: 4;
+    }
+
+    body.netdata-splash .col-start-5 {
+      grid-column-start: 5;
+    }
+
+    body.netdata-splash .col-start-6 {
+      grid-column-start: 6;
+    }
+
+    body.netdata-splash .col-start-7 {
+      grid-column-start: 7;
+    }
+
+    body.netdata-splash .col-start-8 {
+      grid-column-start: 8;
+    }
+
+    body.netdata-splash .col-start-9 {
+      grid-column-start: 9;
+    }
+
+    body.netdata-splash .col-start-10 {
+      grid-column-start: 10;
+    }
+
+    body.netdata-splash .col-start-12 {
+      grid-column-start: 11;
+    }
+
+    body.netdata-splash .col-start-12 {
+      grid-column-start: 12;
+    }
+
+    @media screen and (max-width: 1280px) {
+      body.netdata-splash .md-grid-columns-12 {
+        display: grid;
+        grid-column-gap: 16px;
+        grid-row-gap: 16px;
+        grid-template-columns: repeat(12, 1fr);
+      }
+
+      body.netdata-splash .md-col-span-1 {
+        grid-column: auto / span 1;
+      }
+
+      body.netdata-splash .md-col-span-2 {
+        grid-column: auto / span 2;
+      }
+
+      body.netdata-splash .md-col-span-3 {
+        grid-column: auto / span 3;
+      }
+
+      body.netdata-splash .md-col-span-4 {
+        grid-column: auto / span 4;
+      }
+
+      body.netdata-splash .md-col-span-5 {
+        grid-column: auto / span 5;
+      }
+
+      body.netdata-splash .md-col-span-6 {
+        grid-column: auto / span 6;
+      }
+
+      body.netdata-splash .md-col-span-7 {
+        grid-column: auto / span 7;
+      }
+
+      body.netdata-splash .md-col-span-8 {
+        grid-column: auto / span 8;
+      }
+
+      body.netdata-splash .md-col-span-9 {
+        grid-column: auto / span 9;
+      }
+
+      body.netdata-splash .md-col-span-10 {
+        grid-column: auto / span 10;
+      }
+
+      body.netdata-splash .md-col-span-11 {
+        grid-column: auto / span 11;
+      }
+
+      body.netdata-splash .md-col-span-12 {
+        grid-column: auto / span 12;
+      }
+    }
+
+    body.netdata-splash .row-span-1 {
+      grid-row: auto / span 1;
+    }
+
+    body.netdata-splash .row-span-2 {
+      grid-row: auto / span 2;
+    }
+
+    body.netdata-splash .row-span-3 {
+      grid-row: auto / span 3;
+    }
+
+    body.netdata-splash .row-span-4 {
+      grid-row: auto / span 4;
+    }
+
+    body.netdata-splash .row-span-5 {
+      grid-row: auto / span 5;
+    }
+
+    body.netdata-splash .row-span-6 {
+      grid-row: auto / span 6;
+    }
+
+    body.netdata-splash .row-span-7 {
+      grid-row: auto / span 7;
+    }
+
+    body.netdata-splash .row-span-8 {
+      grid-row: auto / span 8;
+    }
+
+    body.netdata-splash .row-span-9 {
+      grid-row: auto / span 9;
+    }
+
+    body.netdata-splash .row-span-10 {
+      grid-row: auto / span 10;
+    }
+
+    body.netdata-splash .row-span-11 {
+      grid-row: auto / span 11;
+    }
+
+    body.netdata-splash .row-span-12 {
+      grid-row: auto / span 12;
+    }
+
+    body.netdata-splash .relative {
+      position: relative;
+    }
+
+    body.netdata-splash .absolute {
+      position: absolute;
+    }
+
+    body.netdata-splash .index-10 {
+      z-index: 10;
+    }
+
+    body.netdata-splash .m-auto {
+      margin: auto;
+    }
+
+    body.netdata-splash .full-h {
+      height: 100%;
+    }
+
+    body.netdata-splash .flex {
+      display: flex;
+    }
+
+    body.netdata-splash .flex-col {
+      flex-direction: column;
+    }
+
+    body.netdata-splash .space-between {
+      justify-content: space-between;
+    }
+
+    body.netdata-splash .align-center {
+      align-items: center;
+    }
+
+    body.netdata-splash .container {
+      background: var(--main-bg);
+      height: 100vh;
+      column-gap: 0;
+    }
+
+    body.netdata-splash .frame {
+      height: 100vh;
+    }
+
+    body.netdata-splash .light-beam:after {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 1px;
+      box-shadow: 20px 0px 110px 55px rgb(0 255 100 / 10%);
+    }
+
+    body.netdata-splash #setupGrid {
+      opacity: 0.15;
+      position: absolute;
+      inset: 0;
+    }
+
+    body.netdata-splash #monitorGrid {
+      opacity: 0.4;
+      transition: 1s ease;
+    }
+
+    body.netdata-splash #monitorGrid.hovered {
+      opacity: 0.7;
+    }
+
+    body.netdata-splash #sphereContainer {
+      height: calc(100vh);
+      position: relative;
+    }
+
+    body.netdata-splash #sphereContainer h4 {
+      display: none;
+    }
+
+    body.netdata-splash .setup {
+      z-index: 10;
+      position: relative;
+      box-shadow: 20px 0px 160px 5px #012f13c2;
+      background: linear-gradient(90deg,
+          rgba(0, 0, 0, 1) 0%,
+          rgb(0 19 7 / 76%) 100%);
+    }
+
+    body.netdata-splash .setup>.stats {
+      padding: 16px;
+      overflow: auto;
+      height: 100%;
+      position: absolute;
+      top: 65px;
+      left: 0;
+      right: 0;
+      bottom: 0;
+    }
+
+    body.netdata-splash .setup .header {
+      position: sticky;
+      top: 0;
+      padding: 8px 16px;
+      margin: 0;
+      backdrop-filter: blur(8px);
+      background: rgba(0, 0, 0, 0.1);
+      /* border-bottom: 1px solid var(--border); */
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    body.netdata-splash .header .title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    body.netdata-splash .header .logo {
+      width: 32px;
+      height: auto;
+    }
+
+    body.netdata-splash .splash-message {
+      position: absolute;
+      inset: 0;
+      margin: auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    body.netdata-splash .splash-message p {
+      margin-top: 0;
+      margin-bottom: 24px;
+      color: var(--text-light);
+      filter: blur(0.6px);
+    }
+
+    body.netdata-splash .tagline {
+      position: absolute;
+      bottom: 24px;
+      font-size: 12px;
+      color: var(--text-light);
+    }
+
+    body.netdata-splash .skip-link {
+      font-size: 12px;
+      color: var(--text-light);
+      text-align: center;
+    }
+
+    body.netdata-splash .license-link {
+      padding: 0 16px 4px;
+      font-size: 12px;
+      color: var(--text-light);
+    }
+
+    body.netdata-splash .button {
+      padding: 8px 12px;
+      border-radius: 2px;
+      font-size: 16px;
+      min-width: 88px;
+      text-align: center;
+      cursor: pointer;
+      transition: 250ms ease;
+      border: none;
+    }
+
+    body.netdata-splash .button-primary {
+      background: var(--primary);
+      color: var(--text-light);
+    }
+
+    body.netdata-splash .button-primary:hover {
+      background: var(--highlight);
+    }
+
+    body.netdata-splash a.button {
+      color: var(--text-dark);
+    }
+
+    body.netdata-splash .button-ghost {
+      background: transparent;
+      color: var(--primary);
+    }
+
+    body.netdata-splash .button-ghost:hover {
+      color: var(--highlight);
+    }
+
+    body.netdata-splash .clear-button {
+      font-size: 12px;
+      padding: 0;
+      min-width: auto;
+    }
+
+    body.netdata-splash .tabs {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-top: 1px solid var(--border);
+      backdrop-filter: blur(4px);
+    }
+
+    body.netdata-splash button.tab {
+      background: rgba(0, 0, 0, 0.2);
+      border: none;
+      color: var(--menu-item);
+      padding: 8px 0 24px;
+      border-left: 0;
+      cursor: pointer;
+      backdrop-filter: blur(2px);
+      width: 100%;
+      font-size: 12px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+
+    body.netdata-splash button.tab:first-child {
+      /* border-left: 1px solid var(--primary); */
+    }
+
+    body.netdata-splash button.tab:not(.active):hover {
+      color: var(--tab-hover);
+      transition: 100ms ease;
+    }
+
+    body.netdata-splash button.tab.active {
+      background: transparent;
+      /* border-bottom: 1px solid transparent; */
+      backdrop-filter: blur(0);
+      color: var(--tab-active);
+      cursor: default;
+    }
+
+    body.netdata-splash .tab-icon {
+      width: 24px;
+      height: 24px;
+    }
+
+    body.netdata-splash .tab-icon svg {
+      height: 100%;
+      width: 100%;
+    }
+
+    body.netdata-splash .tab-icon svg path {
+      fill: var(--menu-item);
+      transition: 100ms ease;
+    }
+
+    body.netdata-splash .tab.active .tab-icon svg path {
+      fill: var(--tab-active);
+    }
+
+    button.tab:not(.active):hover svg path {
+      fill: var(--tab-hover);
+    }
+
+    body.netdata-splash .panel {
+      background: var(--panel-bg);
+      padding: 16px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      backdrop-filter: blur(0px);
+    }
+
+    body.netdata-splash .panel-tab {
+      border-radius: 0 0 4px 4px;
+      border-top: 0;
+      border-left: 1px solid var(--primary);
+      border-bottom: 1px solid var(--primary);
+      border-right: 1px solid var(--primary);
+      padding: 4px 24px;
+      display: none;
+      height: 70%;
+      overflow: auto;
+    }
+
+    body.netdata-splash .data-tab {
+      display: block;
+      opacity: 0;
+      transition: 800ms ease;
+      pointer-events: none;
+    }
+
+    body.netdata-splash .data-tab.active {
+      opacity: 1;
+      pointer-events: all;
+    }
+
+    body.netdata-splash .data-tab-container {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 45%;
+      /* height: 40vh; */
+    }
+
+    body.netdata-splash .system-container {
+      overflow: auto;
+      height: calc(100% - 330px);
+      padding: 0 24px 24px;
+      margin: 0 -24px;
+      scrollbar-color: var(--scrollbar-thumb) #293030;
+      scrollbar-width: thin;
+    }
+
+    body.netdata-splash .data-tab-container .system>div {
+      display: flex;
+      /* margin-bottom: 24px; */
+      /* backdrop-filter: blur(1px); */
+      height: auto;
+      min-height: 40px;
+      overflow: hidden;
+    }
+
+    body.netdata-splash .data-tab-container .system .key-value {
+      flex-direction: column;
+      gap: 8px;
+      align-items: flex-start;
+      justify-content: start;
+      width: 100%;
+      padding: 0;
+    }
+
+    body.netdata-splash .data-tab-container .system .key-value span:nth-child(1) {
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--border);
+      width: 100%;
+      color: #8eae9b;
+      background: rgba(0, 0, 0, 0.8);
+    }
+
+    body.netdata-splash .data-tab-container .system .key-value span:nth-child(2) {
+      /* font-size: 16px; */
+      padding: 4px 16px 12px;
+      text-align: left;
+      color: var(--accent);
+    }
+
+    body.netdata-splash .panel:hover h4 {
+      color: var(--highlight);
+    }
+
+    body.netdata-splash .hide-title h4 {
+      visibility: hidden;
+    }
+
+    body.netdata-splash .no-key span:first-child {
+      display: none;
+    }
+
+    body.netdata-splash .no-title h4 {
+      display: none;
+    }
+
+    body.netdata-splash .absolute-center {
+      position: absolute;
+      inset: 0;
+      margin: auto;
+    }
+
+    body.netdata-splash .align-end {
+      align-content: flex-end;
+    }
+
+    body.netdata-splash .panel-tab .separator {
+      border-bottom: 1px solid var(--border);
+      margin: 8px -24px;
+    }
+
+    body.netdata-splash .section-image {
+      height: 16px;
+      width: 16px;
+    }
+
+    body.netdata-splash .section-image svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    body.netdata-splash .section-title {
+      font-size: 14px;
+      font-weight: bold;
+      margin: 8px 0;
+      display: inline-block;
+    }
+
+    body.netdata-splash .sphere-stats-container {
+      width: 80%;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      flex-direction: column;
+      justify-content: center;
+      margin-bottom: 10vmin;
+      gap: 16px;
+    }
+
+    body.netdata-splash .key-value {
+      font-size: var(--font-small);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      color: var(--key-value-table);
+    }
+
+    /* .key-value:nth-child(2n) {
+      background: var(--row-2n);
+    } */
+    body.netdata-splash .key-value:hover {
+      color: var(--highlight);
+    }
+
+    body.netdata-splash .key-value span:nth-child(2) {
+      text-align: right;
+    }
+
+    body.netdata-splash .metrics-container {
+      position: absolute;
+      top: 150px;
+    }
+
+    body.netdata-splash .collected-metrics .key-value {
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: none;
+      text-align: center;
+      text-transform: uppercase;
+      font-size: 12px;
+      color: var(--text);
+    }
+
+    body.netdata-splash .collected-metrics .key-value span:nth-child(2) {
+      font-size: 7vmin;
+      font-weight: 700;
+      color: rgb(254 254 254 / 80%);
+      filter: blur(0.8px);
+      text-align: center;
+    }
+
+    #server .key-value span:first-child,
+    #package .key-value span:first-child {
+      display: none;
+    }
+
+    #server .key-value span:nth-child(2),
+    #package .key-value span:nth-child(2) {
+      font-size: 12px;
+      color: var(--primary);
+      font-family: monospace;
+    }
+
+    body.netdata-splash .head-summary {
+      left: 0;
+      padding: 16px;
+      right: 0;
+      display: flex;
+      flex-direction: row;
+      justify-content: space-between;
+    }
+
+    body.netdata-splash .module {
+      border: 2px solid var(--border);
+      border-radius: 16px;
+      box-shadow: -1px 1px var(--main-bg), -2px 2px var(--main-bg),
+        -3px 3px var(--border), -4px 4px 24px var(--border);
+      height: var(--module-height);
+      overflow: auto;
+      scrollbar-color: var(--scrollbar-thumb) #293030;
+      scrollbar-width: thin;
+      /* backdrop-filter: blur(2px); */
+    }
+
+    body.netdata-splash .module-header {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 16px;
+      background: rgba(0, 0, 0, 0.8);
+      border-radius: 16px 16px 0 0;
+      color: #8eae9b;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+    }
+
+    body.netdata-splash .module-header svg path {
+      fill: var(--accent);
+    }
+
+    body.netdata-splash .modules-container {
+      max-height: 100%;
+      text-align: center;
+      margin: auto;
+      column-gap: 24px;
+    }
+
+    body.netdata-splash .module-content {
+      padding: 4px 16px;
+    }
+
+    body.netdata-splash .db-metrics-container {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+    }
+
+    body.netdata-splash .db-metrics-blocks {
+      /* display: flex; */
+      /* flex-direction: column; */
+      /* align-items: center;
+      justify-content: center;
+      gap: 24px; */
+      height: var(--module-height);
+      width: 100%;
+    }
+
+    /* .db-metrics-block {
+      display: flex;
+      flex-direction: column;
+      text-align: center;
+      min-width: 15vmax;
+      height: 150px;
+      padding: 0 24px;
+    } */
+    body.netdata-splash .db-metrics-blocks .module-content {
+      padding: 0;
+    }
+
+    /* .db-metrics-block:not(:last-child) {
+      border-right: 1px solid var(--border);
+    } */
+    body.netdata-splash .db-metrics-title {
+      font-size: 1.5vmin;
+    }
+
+    body.netdata-splash .db-metrics-block-title {
+      font-size: 14px;
+      padding: 8px 16px;
+      z-index: 100;
+      font-weight: bold;
+      color: #fff;
+    }
+
+    body.netdata-splash .db-metrics .key-value {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
+    body.netdata-splash .db-metrics .key-value span:nth-child(2) {
+      font-size: 12px;
+      color: var(--accent);
+      filter: blur(0.5px);
+      text-align: center;
+    }
+
+    body.netdata-splash .db-metrics {
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    body.netdata-splash .disk-stats {
+      /* border-bottom: 0; */
+      padding: 16px;
+    }
+
+    body.netdata-splash .module-content:last-child .disk-stats {
+      padding-bottom: 112px;
+    }
+
+    body.netdata-splash .disk-max .key-value {
+      flex-direction: row;
+      font-size: 12px;
+      justify-content: space-between;
+      padding: 2px 0;
+    }
+
+    body.netdata-splash .disk-max .key-value span:nth-child(2) {
+      font-size: 12px;
+      display: flex;
+      justify-content: space-between;
+      width: 100%;
+    }
+
+    body.netdata-splash .disk-used .key-value {
+      padding: 2px 0;
+    }
+
+    body.netdata-splash .disk-max .key-value span:nth-child(2):before {
+      content: "Disk Size";
+    }
+
+    body.netdata-splash .disk-used .key-value span:nth-child(2):before {
+      content: "Used ";
+    }
+
+    body.netdata-splash .disk-used .key-value span:nth-child(2) {
+      font-size: 12px;
+      display: flex;
+      justify-content: space-between;
+      width: 100%;
+    }
+
+    body.netdata-splash .db-metrics .key-value span:first-child {
+      font-size: 12px;
+      color: var(--text);
+    }
+
+    body.netdata-splash .percentage-container {
+      width: 100%;
+      background: transparent;
+      border: 1px solid var(--primary);
+      height: 16px;
+      border-radius: 1px;
+      position: relative;
+    }
+
+    body.netdata-splash .percentage-bar {
+      background: #016a2b94;
+      position: absolute;
+      bottom: 0;
+      top: 0;
+      left: 0;
+      backdrop-filter: blur(1px);
+    }
+
+    body.netdata-splash .percentage-text {
+      position: absolute;
+      font-size: 12px;
+      top: 0;
+      padding: 0 2px;
+      color: var(--accent);
+    }
+
+    body.netdata-splash .data-tab-table {
+      padding: 16px;
+      width: 400px;
+      height: var(--module-height);
+      margin: auto;
+    }
+
+    body.netdata-splash .node-info-container {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      justify-content: center;
+      align-items: center;
+      gap: 8px;
+    }
+
+    body.netdata-splash .node-info {
+      display: flex;
+      justify-content: center;
+      width: 100%;
+      gap: 8px;
+      flex-direction: row;
+    }
+
+    body.netdata-splash .node-info-container .title {
+      font-size: 12px;
+    }
+
+    body.netdata-splash .node-info .key-value {
+      border: 1px solid var(--highlight);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: var(--highlight);
+      height: 20px;
+    }
+
+    body.netdata-splash .node-info .key-value span:first-child {
+      margin-right: 4px;
+      font-weight: normal;
+    }
+
+    body.netdata-splash .availability {
+      text-align: right;
+      font-family: monospace;
+      display: flex;
+      flex-direction: column;
+      text-transform: capitalize;
+      padding: 8px 16px;
+      color: #fff;
+      font-size: 12px;
+    }
+
+    body.netdata-splash .availability .key-valye {
+      padding: 4px 0;
+    }
+
+    body.netdata-splash .sub-module {
+      width: 100%;
+    }
+
+    body.netdata-splash .hardware {
+      flex-direction: column;
+    }
+
+    body.netdata-splash .hardware .module-content {
+      padding: 0;
+      display: flex;
+    }
+
+    body.netdata-splash .module.has-title .section-title {
+      padding-bottom: 12px;
+      margin-bottom: 0;
+    }
+
+    body.netdata-splash .h-auto {
+      height: auto;
+    }
+
+    body.netdata-splash .none {
+      display: none;
+    }
+
+    body.netdata-splash .claim-message {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      margin: auto;
+      padding: 0 24px;
+      overflow-y: auto;
+    }
+
+    body.netdata-splash .claim-message .welcome {
+      padding: 16px 0;
+      text-align: center;
+    }
+
+    body.netdata-splash .text-center {
+      text-align: center;
+    }
+
+    body.netdata-splash .connection-modal {
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid var(--border);
+      padding: 16px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      position: relative;
+      font-size: 14px;
+    }
+
+    body.netdata-splash .connection-step {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      position: relative;
+      min-height: 300px;
+    }
+
+    body.netdata-splash .dropdown-custom {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      position: relative;
+    }
+
+    body.netdata-splash .modal-footer {
+      height: var(--footer-height);
+      padding: 10px 0 0;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    body.netdata-splash .modal-footer .button {
+      height: 32px;
+      font-size: 14px;
+    }
+
+    body.netdata-splash .list-options {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      height: 300px;
+      overflow: auto;
+      scrollbar-color: var(--scrollbar-thumb) #293030;
+      scrollbar-width: thin;
+    }
+
+    body.netdata-splash .list-options li {
+      padding: 8px 12px;
+      background: var(--list-option-bg);
+      border: 1px solid var(--border-neutral);
+      margin-bottom: 12px;
+      cursor: pointer;
+    }
+
+    body.netdata-splash .list-options li:hover {
+      background: var(--list-option-hover-bg);
+    }
+
+    body.netdata-splash .list-options li.selected {
+      background: var(--list-option-selected-bg);
+      color: var(--highlight);
+      display: flex;
+      justify-content: space-between;
+    }
+
+    body.netdata-splash .list-options li.selected:after {
+      content: "\2713";
+      margin-left: 2px;
+    }
+
+    body.netdata-splash input[type="text"] {
+      background: #2d3535;
+      padding: 4px 8px;
+      border: 0;
+      font-size: 14px;
+      min-height: 28px;
+      color: var(--text);
+      border-radius: 2px;
+    }
+
+    body.netdata-splash input[type="text"]:focus {
+      outline: 1px solid var(--border);
+    }
+
+    body.netdata-splash .dropdown {
+      position: relative;
+      width: auto;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 8px;
+      cursor: pointer;
+    }
+
+    body.netdata-splash .dropdown-toggle {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    body.netdata-splash .checkbox-container {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      width: 100%;
+      border: 1px solid var(--border);
+      background-color: var(--main-bg);
+      z-index: 1;
+      max-height: 150px;
+      overflow-y: auto;
+      padding: 8px;
+    }
+
+    body.netdata-splash .checkbox-container label {
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    body.netdata-splash .checkbox-container input {
+      margin-right: 5px;
+    }
+
+    body.netdata-splash .selected-rooms {
+      font-size: 14px;
+      color: #333;
+    }
+
+    body.netdata-splash .text-padding {
+      padding: 8px 8px 16px;
+    }
+
+    body.netdata-splash .nd-radio,
+    body.netdata-splash .nd-checkbox {
+      display: block;
+      position: relative;
+      padding-left: 32px;
+      cursor: pointer;
+      font-size: 16px;
+      -webkit-user-select: none;
+      -moz-user-select: none;
+      user-select: none;
+      line-height: 20px;
+    }
+
+    body.netdata-splash .nd-checkbox input {
+      position: absolute;
+      opacity: 0;
+      cursor: pointer;
+      height: 0;
+      width: 0;
+    }
+
+    body.netdata-splash .nd-checkbox .checkmark {
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 16px;
+      width: 16px;
+      background-color: var(--main-bg);
+      border: 1px solid var(--primary);
+      border-radius: 2px;
+    }
+
+    body.netdata-splash .nd-checkbox:hover input~.checkmark {
+      background-color: var(--border);
+    }
+
+    body.netdata-splash .nd-checkbox :hover input~.checkmark {
+      background-color: #ccc;
+    }
+
+    body.netdata-splash .nd-checkbox input:checked~.checkmark {
+      background-color: var(--boder);
+    }
+
+    body.netdata-splash .nd-checkbox .checkmark:after {
+      content: "";
+      position: absolute;
+      display: none;
+    }
+
+    body.netdata-splash .nd-checkbox input:checked~.checkmark:after {
+      display: block;
+    }
+
+    body.netdata-splash .nd-checkbox .checkmark:after {
+      inset: 0 0 2px 0;
+      margin: auto;
+      width: 2px;
+      height: 8px;
+      border: solid var(--highlight);
+      border-width: 0 2px 2px 0;
+      transform: rotate(45deg);
+    }
+
+    /* Retention table */
+    #tiers-container {
+      height: auto;
+    }
+
+    #tiers-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    #tiers-table thead tr:nth-of-type(1) th {
+      padding-top: 16px;
+    }
+
+    #tiers-table thead tr:nth-of-type(2) th {
+      padding-bottom: 16px;
+    }
+
+    #tiers-table tbody tr:nth-of-type(1) td {
+      border-top: 1px solid var(--border);
+      padding-top: 16px;
+    }
+
+    #tiers-table tbody tr:last-of-type td {
+      padding-bottom: 24px;
+    }
+
+    #tiers-table th {
+      font-size: var(--font-small);
+      padding: 8px 4px;
+    }
+
+    #tiers-table td {
+      font-size: var(--font-medium);
+      text-align: center;
+      padding: 12px 4px;
+    }
+
+    #tiers-table th:first-of-type,
+    #tiers-table td:first-of-type {
+      padding-left: 12px;
+    }
+  
+    #tiers-table th:last-of-type,  
+    #tiers-table td:last-of-type {
+      padding-right: 12px;
+    }
+
+    #tiers-table .section-start {
+      border-left: 1px solid var(--border);
+    }
+
+    .progress-indicator {
+      gap: 8px;
+      padding: 0 8px;
+    }
+
+    .progress-bar-container {
+      position: relative;
+      width: 100%;
+      height: var(--progress-bar-height);
+      background-color: var(--border-neutral);
+      overflow: hidden;
+      border-radius: 2px;
+    }
+
+    .progress-bar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: var(--progress-bar-height);
+      background-color: var(--primary);
+    }
+
+    #tooltip {
+      max-width: 300px;
+      background-color: var(--accent);
+      color: var(--text-dark);
+      border-radius: 4px;
+      padding: 8px 16px;
+      position: fixed;
+      font-size: var(--font-small);
+      line-height: 1.5;
+      z-index: 9999;
+      display: none;
+    }</style><script>const toggleTab = tab => {
+      const factors = document.querySelectorAll(".data-tab");
+      const tabs = document.querySelectorAll(".btn-tab");
+
+      factors.forEach(function (factor) {
+        let dataTab = parseInt(factor.getAttribute("data-tab"));
+        if (dataTab == tab || dataTab === 0) {
+          factor.classList.add("active");
+        } else {
+          factor.classList.remove("active");
+        }
+      });
+
+      // Toggle active class on tab buttons
+      tabs.forEach(tabButton => {
+        if (tabButton.dataset?.tab == tab) {
+          tabButton.classList.add("active");
+        } else {
+          tabButton.classList.remove("active");
+        }
+      });
+    }
+
+    const initGrid = () => {
+      const canvas1 = document.getElementById("monitorGrid");
+      const context1 = canvas1.getContext("2d");
+      const frame = document.querySelector(".frame");
+      const cellSize = 4;
+      const gapSize = 2;
+      const colors = ["#001107", "#003114", "#014420", "#047031", "#049846"];
+
+      let grid = [];
+
+      const getRandomColor = () => {
+        return colors[Math.floor(Math.random() * colors.length)];
+      }
+
+      const resizeCanvas = (canvas, context) => {
+        canvas.width = frame.clientWidth;
+        canvas.height = frame.clientHeight;
+
+        const cols = Math.floor(canvas.width / (cellSize + gapSize));
+        const rows = Math.floor(canvas.height / (cellSize + gapSize));
+
+        grid = Array.from({ length: rows }, () =>
+          Array.from({ length: cols }, getRandomColor)
+        );
+
+        drawGrid(context, canvas);
+      }
+
+      const drawGrid = (context, canvas) => {
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        const cols = Math.floor(canvas.width / (cellSize + gapSize));
+        const rows = Math.floor(canvas.height / (cellSize + gapSize));
+
+        for (let row = 0; row < rows; row++) {
+          for (let col = 0; col < cols; col++) {
+            if (grid[row] && grid[row][col]) {
+              context.fillStyle = grid[row][col];
+              context.fillRect(
+                col * (cellSize + gapSize),
+                row * (cellSize + gapSize),
+                cellSize,
+                cellSize
+              );
+            }
+          }
+        }
+      }
+
+      resizeCanvas(canvas1, context1);
+
+      window.addEventListener("resize", () => resizeCanvas(canvas1, context1));
+    }</script></head><body class="loading netdata-splash"><noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-N6CBMJD" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript><div id="app" class="container grid"><div class="frame frame-left col-span-7 grid light-beam relative"><div class="head-summary absolute index-10"><div class="server"><div class="no-title" id="server"></div><div class="no-title" id="package"></div></div><div class="availability h-auto module"><div class="title">Cloud status</div><div class="no-key" id="cloud_status"></div></div></div><div class="col-span-12 row-span-11"><div id="sphereContainer"><div id="loadingMessage" class="loading-message">Loading...</div><div class="hide-title absolute-center sphere-stats-container"><div class="metrics-container"><div class="collected-metrics" id="collectedMetrics"></div><div class="node-info-container"><div class="title">NODES</div><div class="node-info" id="nodes_streaming"></div></div></div><div class="system-container data-tab data-tab-container" data-tab="2"><div class="system grid-columns-10 md-grid-columns-12"><div class="flex-col col-span-5 md-col-span-6"><div class="section-title">Kernel</div><div class="grid-columns-10"><div class="h-auto module col-span-5" id="kernel"></div><div class="h-auto module col-span-5" id="kernelVersion"></div></div></div><div class="flex-col col-span-5 md-col-span-6"><div class="section-title">OS</div><div class="grid-columns-10"><div id="os" class="h-auto module col-span-5"></div><div class="h-auto module col-span-5" id="id"></div></div></div><div class="hardware module-section col-span-10 md-col-span-12"><div class="section-title">Hardware</div><div class="grid-columns-10 md-grid-columns-12"><div class="module h-auto col-span-2 md-col-span-4" id="cpuCores"></div><div class="module h-auto col-span-2 md-col-span-4" id="cpuFrequency"></div><div class="module h-auto col-span-2 md-col-span-4" id="ram"></div><div class="module h-auto col-span-2 md-col-span-4" id="disk"></div><div class="module h-auto col-span-2 md-col-span-4" id="cpuArchitecture"></div><div class="module h-auto col-span-2 md-col-span-4" id="virtualization"></div></div></div></div></div><div class="data-tab data-tab-container" data-tab="1"><div class="db-metrics-container"><div id="tiers-container" class="db-metrics-blocks module"><table id="tiers-table"><thead><tr><th rowspan="2"><span data-tooltip="A database layer that stores metrics at a specific resolution.">Tier</span></th><th rowspan="2">Resolution</th><th colspan="2" class="section-start">Collected</th><th colspan="3" class="section-start">Retention</th><th colspan="2" class="section-start">Disk</th></tr><tr><th class="section-start">Metrics</th><th><span data-tooltip="The total number of measurements stored in the database across all metrics. Each sample represents a recorded value for a specific metric at a given time.">Samples</span></th><th class="section-start">Current</th><th><span data-tooltip="The maximum time data can be kept, based on the configured time and disk space limits.">Effective</span></th><th>Configured</th><th class="section-start">Used</th><th>Configured</th></tr></thead><tbody><tr id="tiers-table-data-placeholder"></tr></tbody></table></div></div></div><div class="data-tab data-tab-container" data-tab="3"><div class="modules-container grid"><div class="module col-span-4"><div class="module-header"><div class="section-image"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16.5299 4.47019C16.2399 4.18019 15.7599 4.18019 15.4699 4.47019L13.5299 6.41019L11.5899 4.47019L13.5299 2.53019C13.8199 2.24019 13.8199 1.76019 13.5299 1.47019C13.2399 1.18019 12.7599 1.18019 12.4699 1.47019L10.5299 3.41019L8.99994 1.88019L5.74994 5.13019C4.93994 5.93019 4.49994 7.01019 4.49994 8.15019V8.38019L3.72994 9.15019C2.53994 10.3302 2.45994 12.2002 3.43994 13.5002L1.96994 14.9702C1.67994 15.2602 1.67994 15.7402 1.96994 16.0302C2.11994 16.1802 2.30994 16.2502 2.49994 16.2502C2.68994 16.2502 2.87994 16.1802 3.02994 16.0302L4.49994 14.5602C5.06994 15.0002 5.76994 15.2402 6.49994 15.2402C7.38994 15.2402 8.21994 14.8902 8.84994 14.2702L9.61994 13.5002H9.84994C10.9899 13.5002 12.0599 13.0602 12.8699 12.2502L16.1199 9.00019L14.5899 7.47019L16.5299 5.53019C16.8199 5.24019 16.8199 4.76019 16.5299 4.47019ZM11.8099 11.1902C11.2899 11.7102 10.5899 12.0002 9.84994 12.0002H8.99994L7.78994 13.2102C7.42994 13.5702 6.96994 13.7402 6.49994 13.7402C6.02994 13.7402 5.56994 13.5602 5.20994 13.2102L4.78994 12.7902C4.07994 12.0802 4.07994 10.9202 4.78994 10.2102L5.46994 9.53019L6.40994 10.4702C6.99994 11.0602 7.94994 11.0602 8.52994 10.4702L6.01994 7.96019C6.06994 7.30019 6.33994 6.67019 6.80994 6.19019L8.99994 4.00019L13.9999 9.00019L11.8099 11.1902Z" fill="var(--text)"/></svg></div><span class="section-title">Plugins</span></div><div class="module-content" id="plugins"></div></div><div class="module col-span-4"><div class="module-header"><div class="section-image"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7 18C7.55 18 8 17.55 8 17C8 16.45 7.55 16 7 16C6.45 16 6 16.45 6 17C6 17.55 6.45 18 7 18ZM14 17.79C14.28 17.51 14.28 17.07 14 16.79C13.72 16.51 13.28 16.51 13 16.79C12.72 17.07 12.72 17.51 13 17.79C13.28 18.07 13.72 18.07 14 17.79ZM17 8V4H12V2H2V22H22V8H17ZM10 20H4V4H10V20ZM15 20H12V6H15V20ZM20 20H17V10H20V20ZM19 17.79C19.28 17.51 19.28 17.07 19 16.79C18.72 16.51 18.28 16.51 18 16.79C17.72 17.07 17.72 17.51 18 17.79C18.28 18.07 18.72 18.07 19 17.79Z" fill="var(--text)"/></svg></div><span class="section-title">Libraries</span></div><div class="module-content" id="libs"></div></div><div class="module col-span-4"><div class="module-header"><div class="section-image"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 16.0002H5V14.5002H4V16.0002ZM2 16.0002H3V14.5002H2V16.0002ZM15.28 6.97019L10.25 1.94019L5.22 6.97019C4.927 7.26319 4.927 7.73819 5.22 8.03119C5.513 8.32419 5.988 8.32419 6.281 8.03119L9.5 4.81119V11.8392C9.5 13.3062 8.306 14.5002 6.838 14.5002H6V16.0002H6.838C9.136 16.0002 11 14.1372 11 11.8382V4.81119L14.22 8.03119C14.366 8.17719 14.558 8.25119 14.75 8.25119C14.942 8.25119 15.134 8.17819 15.28 8.03119C15.573 7.73719 15.573 7.26319 15.28 6.97019Z" fill="var(--text)"/></svg></div><span class="section-title">Exporters</span></div><div class="module-content" id="exporters"></div></div></div></div><div class="data-tab data-tab-container" data-tab="4"><div class="module data-tab-table" id="directories"></div></div></div></div></div><div class="relative row-span-1 col-span-12 full-h"><div class="license-link"><a href="https://app.netdata.cloud/LICENSE.txt" target="_blank">Netdata UI License</a></div><div class="tabs full-h"><button type="button" name="button" class="btn-tab tab active" data-tab="1"><div class="tab-icon"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 10C14.153 10 16.5 7.927 16.5 6C16.5 4.073 14.153 2 9 2C3.847 2 1.5 4.073 1.5 6C1.5 7.927 3.847 10 9 10ZM9 3.5C12.313 3.5 15 4.619 15 6C15 7.381 12.313 8.5 9 8.5C5.687 8.5 3 7.381 3 6C3 4.619 5.687 3.5 9 3.5ZM14.566 12.931C13.68 13.85 11.523 14.5 9 14.5C6.477 14.5 4.32 13.85 3.434 12.931C2.639 12.547 2.01 12.081 1.545 11.563C1.518 11.708 1.5 11.854 1.5 12C1.5 13.927 3.847 16 9 16C14.153 16 16.5 13.927 16.5 12C16.5 11.854 16.482 11.708 16.455 11.562C15.99 12.081 15.361 12.546 14.566 12.931ZM14.566 9.931C13.68 10.85 11.523 11.5 9 11.5C6.477 11.5 4.32 10.85 3.434 9.931C2.639 9.547 2.01 9.081 1.545 8.563C1.518 8.708 1.5 8.854 1.5 9C1.5 10.927 3.847 13 9 13C14.153 13 16.5 10.927 16.5 9C16.5 8.854 16.482 8.708 16.455 8.562C15.99 9.081 15.361 9.546 14.566 9.931Z"/></svg></div>Database</button> <button type="button" name="button" class="btn-tab tab" data-tab="2"><div class="tab-icon"><svg width="60" height="60" viewBox="0 0 60 60" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M40.3125 18.75H19.6875C19.1697 18.75 18.75 19.1697 18.75 19.6875V40.3125C18.75 40.8303 19.1697 41.25 19.6875 41.25H40.3125C40.8303 41.25 41.25 40.8303 41.25 40.3125V19.6875C41.25 19.1697 40.8303 18.75 40.3125 18.75Z"/><path d="M54.375 22.5C54.8723 22.5 55.3492 22.3025 55.7008 21.9508C56.0525 21.5992 56.25 21.1223 56.25 20.625C56.25 20.1277 56.0525 19.6508 55.7008 19.2992C55.3492 18.9475 54.8723 18.75 54.375 18.75H52.5V15C52.4978 13.0115 51.707 11.1051 50.3009 9.6991C48.8949 8.29305 46.9885 7.50217 45 7.5H41.25V5.625C41.25 5.12772 41.0525 4.65081 40.7008 4.29917C40.3492 3.94754 39.8723 3.75 39.375 3.75C38.8777 3.75 38.4008 3.94754 38.0492 4.29917C37.6975 4.65081 37.5 5.12772 37.5 5.625V7.5H31.875V5.625C31.875 5.12772 31.6775 4.65081 31.3258 4.29917C30.9742 3.94754 30.4973 3.75 30 3.75C29.5027 3.75 29.0258 3.94754 28.6742 4.29917C28.3225 4.65081 28.125 5.12772 28.125 5.625V7.5H22.5V5.625C22.5 5.12772 22.3025 4.65081 21.9508 4.29917C21.5992 3.94754 21.1223 3.75 20.625 3.75C20.1277 3.75 19.6508 3.94754 19.2992 4.29917C18.9475 4.65081 18.75 5.12772 18.75 5.625V7.5H15C13.0115 7.50217 11.1051 8.29305 9.6991 9.6991C8.29305 11.1051 7.50217 13.0115 7.5 15V18.75H5.625C5.12772 18.75 4.65081 18.9475 4.29917 19.2992C3.94754 19.6508 3.75 20.1277 3.75 20.625C3.75 21.1223 3.94754 21.5992 4.29917 21.9508C4.65081 22.3025 5.12772 22.5 5.625 22.5H7.5V28.125H5.625C5.12772 28.125 4.65081 28.3225 4.29917 28.6742C3.94754 29.0258 3.75 29.5027 3.75 30C3.75 30.4973 3.94754 30.9742 4.29917 31.3258C4.65081 31.6775 5.12772 31.875 5.625 31.875H7.5V37.5H5.625C5.12772 37.5 4.65081 37.6975 4.29917 38.0492C3.94754 38.4008 3.75 38.8777 3.75 39.375C3.75 39.8723 3.94754 40.3492 4.29917 40.7008C4.65081 41.0525 5.12772 41.25 5.625 41.25H7.5V45C7.50217 46.9885 8.29305 48.8949 9.6991 50.3009C11.1051 51.707 13.0115 52.4978 15 52.5H18.75V54.375C18.75 54.8723 18.9475 55.3492 19.2992 55.7008C19.6508 56.0525 20.1277 56.25 20.625 56.25C21.1223 56.25 21.5992 56.0525 21.9508 55.7008C22.3025 55.3492 22.5 54.8723 22.5 54.375V52.5H28.125V54.375C28.125 54.8723 28.3225 55.3492 28.6742 55.7008C29.0258 56.0525 29.5027 56.25 30 56.25C30.4973 56.25 30.9742 56.0525 31.3258 55.7008C31.6775 55.3492 31.875 54.8723 31.875 54.375V52.5H37.5V54.375C37.5 54.8723 37.6975 55.3492 38.0492 55.7008C38.4008 56.0525 38.8777 56.25 39.375 56.25C39.8723 56.25 40.3492 56.0525 40.7008 55.7008C41.0525 55.3492 41.25 54.8723 41.25 54.375V52.5H45C46.9885 52.4978 48.8949 51.707 50.3009 50.3009C51.707 48.8949 52.4978 46.9885 52.5 45V41.25H54.375C54.8723 41.25 55.3492 41.0525 55.7008 40.7008C56.0525 40.3492 56.25 39.8723 56.25 39.375C56.25 38.8777 56.0525 38.4008 55.7008 38.0492C55.3492 37.6975 54.8723 37.5 54.375 37.5H52.5V31.875H54.375C54.8723 31.875 55.3492 31.6775 55.7008 31.3258C56.0525 30.9742 56.25 30.4973 56.25 30C56.25 29.5027 56.0525 29.0258 55.7008 28.6742C55.3492 28.3225 54.8723 28.125 54.375 28.125H52.5V22.5H54.375ZM45 41.25C45 42.2446 44.6049 43.1984 43.9016 43.9016C43.1984 44.6049 42.2446 45 41.25 45H18.75C17.7554 45 16.8016 44.6049 16.0984 43.9016C15.3951 43.1984 15 42.2446 15 41.25V18.75C15 17.7554 15.3951 16.8016 16.0984 16.0984C16.8016 15.3951 17.7554 15 18.75 15H41.25C42.2446 15 43.1984 15.3951 43.9016 16.0984C44.6049 16.8016 45 17.7554 45 18.75V41.25Z"/></svg></div>System</button> <button type="button" name="button" class="btn-tab tab" data-tab="3"><div class="tab-icon"><svg width="60" height="60" viewBox="0 0 60 60" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M59.7937 16.4062C59.7164 16.2322 59.6084 16.0734 59.475 15.9375C59.3495 15.8165 59.2112 15.7097 59.0625 15.6187L30.9 0.224957C30.615 0.0603916 30.2916 -0.0262451 29.9625 -0.0262451C29.6334 -0.0262451 29.31 0.0603916 29.025 0.224957L1.06875 15.525C1.06875 15.525 1.06875 15.6187 0.91875 15.6375C0.762779 15.7334 0.618116 15.8466 0.4875 15.975C0.433211 16.047 0.383128 16.1221 0.3375 16.2C0.244093 16.3333 0.168457 16.4783 0.1125 16.6312C0.1125 16.6312 0.1125 16.6312 0.1125 16.7437C0.103788 16.8435 0.103788 16.9439 0.1125 17.0437C0.1125 17.0437 0.1125 17.1562 0.1125 17.2125V42.7687C0.0613239 42.8827 0.0235706 43.0023 0 43.125L0 43.3875C0.142582 43.8604 0.466002 44.2579 0.9 44.4937L29.025 59.8312H29.1375H29.2875C29.5116 59.9337 29.7537 59.9911 30 60C30.2245 59.9926 30.4462 59.9482 30.6563 59.8687H30.7875H30.9L59.025 44.5312C59.3209 44.3693 59.5676 44.1306 59.7392 43.8402C59.9108 43.5498 60.0009 43.2185 60 42.8812V17.2125C59.9937 16.9939 59.9493 16.7782 59.8688 16.575C59.8516 16.5155 59.8264 16.4588 59.7937 16.4062ZM28.125 54.975L3.75 41.6625V20.3812L28.125 33.75V54.975ZM30 30.4125L5.79375 17.2875L30 4.01246L54.2062 17.1375L30 30.4125ZM56.25 41.6625L31.875 54.975V33.75L56.25 20.4562V41.6625Z"/></svg></div>Modules</button> <button type="button" name="button" class="btn-tab tab" data-tab="4"><div class="tab-icon"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 10.5V5.5H10V7.25H5.75V6.5H8V1.5H2V6.5H4.25V14.75H10V16.5H16V11.5H10V13.25H5.75V8.75H10V10.5H16ZM11.5 7H14.5V9H11.5V7ZM11.5 13H14.5V15H11.5V13ZM3.5 5V3H6.5V5H3.5Z"/></svg></div>Directories</button></div></div></div><div class="frame relative col-span-5 frame-right"><canvas id="monitorGrid"></canvas><div id="splashMessageContainer" class="splash-message"><svg width="133" height="105" viewBox="0 0 133 105" fill="none" xmlns="http://www.w3.org/2000/svg" class="logo"><path fill-rule="evenodd" clip-rule="evenodd" d="M81.697 105H55.0693L0.5 0.5H77.9598C108.079 0.554913 132.484 24.7711 132.5 54.6451C132.452 82.485 109.73 105 81.697 105Z" fill="#FCFFFD"/></svg><h1 class="text-center">Welcome to Netdata</h1><p id="msgSignIn">Please sign-in to continue</p><a id="btnSignIn" href="javascript:loadDashboard(true);" class="button button-primary">Sign-in</a><div class="tagline skip-link"><a class="opt-out-link" href="javascript:loadDashboard();">Skip and use the dashboard anonymously.</a> <span class="no-anonymous-access"></span></div></div><div id="claimingContentsContainer" class="claim-message" style="display:none;"><div class="welcome"><svg width="133" height="105" viewBox="0 0 133 105" fill="none" xmlns="http://www.w3.org/2000/svg" class="logo"><path fill-rule="evenodd" clip-rule="evenodd" d="M81.697 105H55.0693L0.5 0.5H77.9598C108.079 0.554913 132.484 24.7711 132.5 54.6451C132.452 82.485 109.73 105 81.697 105Z" fill="#FCFFFD"/></svg><h1 class="text-center">Welcome to Netdata</h1><span>Please connect your agent to continue.</span></div><div class="connection-modal"><div id="connectionStep-1"><div class="connection-step"><span class="text-small">Please select the space you want this agent to join:</span> <span class="loader">Loading spaces...</span><ul id="spacesList" class="list-options"></ul></div></div><div id="connectionStep-2" style="display:none;"><div class="connection-step"><div class="dropdown-custom" data-target="claimMessage"><div class="dropdown-custom-input flex space-between align-center"><span class="text-small">Select room(s)</span><button class="text-small button button-ghost clear-button">Clear</button></div><div id="roomsSelector" class="dropdown"><div class="dropdown-toggle"><span id="selectedItems" class="selected-items">Select room</span> <span>▼</span></div><div id="roomsSelectorOptionsContainer" class="checkbox-container"></div></div></div><div id="claimMessage" class="selected-message"></div><div class="">Please run the command below in your terminal:</div><code id="claimCommand"></code><div class="">and paste the generated private key in the field below:</div><input id="claimingPrivateKey" name="claimingPrivateKey" value="" placeholder="Private Key"/></div><div id="claimTip" class="text-padding text-small">Tip: If the command doesn’t work out-of-the-box, locate the {keyFilename} file, open it in your favourite text editor, and copy it to your clipboard.</div><div id="claimErrorMessage" class="text-padding error" style="display:none;"></div></div><div class="modal-footer flex-col"><div class="flex space-between"><button id="btnConnectionStepPrev" class="button button-ghost">&#8592; Back</button> <button id="btnConnectionStepNext" class="button button-primary">Next</button> <button id="btnClaim" class="button button-primary">Claim</button></div><div class="skip-link"><a class="signout-link" href="javascript:signout()">Sign out to switch user</a></div></div></div></div></div><div id="tooltip"></div></div></body><script>const initPrimaryButtonHover = () => {
+    const button = document.getElementById("btnSignIn");
+    const canvas = document.getElementById("monitorGrid");
+
+    if (button) {
+      button.addEventListener("mouseover", () => {
+        canvas.classList.add("hovered");
+      });
+    }
+
+    if (canvas) {
+      button.addEventListener("mouseout", () => {
+        canvas.classList.remove("hovered");
+      });
+    }
+  }
+
+  const initTabs = () => {
+    const btnTabs = document.querySelectorAll(".btn-tab");
+    btnTabs.forEach(btn => {
+      btn.addEventListener("click", e => {
+        const tab = e.currentTarget?.dataset?.tab;
+        if (tab) {
+          toggleTab(tab);
+        }
+      })
+    })
+  }
+
+  // =============================================== //
+
+  const status = {
+    TIMEOUT: 'timeout',
+    SUCCESS: 'success',
+    SKIPPED: 'skipped'
+  };
+
+  const getSessionId = () => {
+    const key = "telemetrySessionId"
+    if (!sessionStorage.getItem(key)) {
+      sessionStorage.setItem(key, self.crypto && self.crypto.randomUUID ? self.crypto.randomUUID() : new Date().getTime());
+    }
+    return sessionStorage.getItem(key) || "";
+  }
+
+  const defaultErrorMessage = "Something went wrong."
+  const agentUri = window.location.origin + window.location.pathname.replace(pathsRegex, "");
+  const telemetrySessionId = getSessionId();
+  const ensureOneSlash = urlStr => urlStr.replace(/([^:]\/)\/+/g, "$1");
+
+  // Utils =============================================================================== //
+
+  const createElem = (tag, attrs) => {
+    if (!tag) return null
+    const elem = document.createElement(tag);
+    if (Object.keys(attrs || {}).length) {
+      Object.entries(attrs).forEach(([k, v]) => {
+        elem[k] = v;
+      })
+    }
+    return elem
+  }
+
+  const getDOM = ({ tag = "div", children = [], ...rest } = {}) => {
+    const element = document.createElement(tag);
+
+    Object.entries(rest || {}).forEach(([k, v]) => {
+      if (element[k] !== undefined) {
+        if (k == "dataset" && Object.keys(v).length == 1) {
+          const dataPair = Object.entries(v)[0]
+          element[k][dataPair[0]] = dataPair[1]
+        } else {
+          element[k] = v;
+        }
+      }
+    })
+
+    if (!!children?.length) {
+      children.filter(({ condition = true }) => !!condition).forEach(childStructure => {
+        element.appendChild(getDOM(childStructure));
+      });
+    }
+
+    return element;
+  }
+
+  // ===================================================================================== //
+
+  // Agent info
+  const AGENT_INFO_KEY = `agentInfo:${window.envSettings.agentApiUrl}`
+  const getAgentInfo = () => {
+    const agentInfo = localStorage.getItem(AGENT_INFO_KEY)
+    if (agentInfo) {
+      try {
+        return Promise.resolve(JSON.parse(agentInfo))
+      } catch (err) {
+        return Promise.resolve()
+      }
+    }
+
+    return fetch(ensureOneSlash(`${window.envSettings.agentApiUrl}/api/v3/info`)).then(response => response.json()).then(data => {
+      if (CONFIG.cache.agentInfo) {
+        localStorage.setItem(AGENT_INFO_KEY, JSON.stringify(data || {}))
+      }
+      return data
+    }).catch(() => Promise.resolve())
+  }
+
+  const loadStyle = (url, { media, insertAfter: aref, insertBefore: bref, rel, type } = {}) => {
+    rel = rel || 'stylesheet'
+    type = type || 'text/css'
+    return new Promise(function (resolve, reject) {
+      let link = document.createElement('link');
+      link.type = type;
+      link.rel = rel;
+      link.href = url;
+      link.media = media || 'all';
+
+      link.onerror = function (err) {
+        reject(new URIError(`loadStyle: the stylesheet ${err.target.src} is not accessible.`));
+      };
+
+      link.onload = function () {
+        resolve();
+      };
+
+      if (aref) {
+        aref.parentNode.insertBefore(link, aref.nextSibling);
+        return;
+      }
+
+      if (bref) {
+        bref.parentNode.insertBefore(link, bref);
+        return;
+      }
+
+      document.head.appendChild(link);
+    });
+  }
+
+  const loadScript = (url, { async = true, defer = false, insertAfter: aref, insertBefore: bref, timeout = 5000, attrs, skipIf } = {}) => {
+    return new Promise(function (resolve, reject) {
+      if (typeof skipIf === 'function' && skipIf()) {
+        resolve(status.SKIPPED);
+        return;
+      }
+
+      let rejectWithTimeout = setTimeout(function () { reject(status.TIMEOUT) }, timeout);
+
+      let script = document.createElement('script');
+      script.type = 'text/javascript';
+      script.src = url;
+      script.async = async;
+      script.defer = defer;
+
+      if (attrs) {
+        for (let attr in attrs) {
+          script.setAttribute(attr, attrs[attr]);
+        }
+      }
+
+      script.onerror = function (err) {
+        reject(new URIError(`loadScript: the script ${err.target.src} is not accessible.`));
+      };
+
+      script.onload = function () {
+        clearTimeout(rejectWithTimeout);
+        resolve(status.SUCCESS);
+      };
+
+      if (aref) {
+        aref.parentNode.insertBefore(script, aref.nextSibling);
+        return;
+      }
+
+      if (bref) {
+        bref.parentNode.insertBefore(script, bref);
+        return;
+      }
+
+      document.body.appendChild(script);
+    });
+  }
+
+  __webpack_public_path__ = ensureOneSlash(window.envSettings.webpackPublicPath ? (window.envSettings.webpackPublicPath + "/") : (window.envSettings.agentApiUrl + "/v3/"))
+
+  const loadLatestUI = () => {
+    return fetch(__webpack_public_path__ + "bundlesManifest." + window.envSettings.version.toString().replace(/(\d+)\..+/, "$1") + ".json")
+      .then(function (response) { return response.json() })
+      .catch(() => goToOld('/v3'))
+      .then(function (data) {
+        Object.keys(data).forEach(function (k) {
+          if (/\.(map|ico|html)$/.test(data[k])) return
+          if (/static\//.test(data[k])) return
+
+          if (/\.css.*$/.test(data[k])) {
+            loadStyle(ensureOneSlash(__webpack_public_path__ + data[k]))
+            return
+          }
+
+          if (/\.js.*$/.test(data[k])) {
+            loadScript(ensureOneSlash(__webpack_public_path__ + data[k]), {
+              async: false,
+            });
+          }
+        })
+        return Promise.resolve()
+      })
+  }
+
+  const loadDashboard = signIn => {
+    loadLatestUI().then(() => {
+      if (signIn) {
+        window.location.href = ensureOneSlash(
+          `${window.envSettings.cloudUrl}/trust?redirect_uri=${encodeURIComponent(
+            window.location.href
+          )}&agent_uri=${encodeURIComponent(
+            agentUri || window.envSettings.agentApiUrl
+          )}&telemetry_session_id=${telemetrySessionId}`
+        )
+      }
+    })
+  }
+
+  const signout = () => {
+    localStorage.removeItem(CLOUD_TOKEN_KEY)
+    window.location.reload()
+  }
+
+  const fetchRegistryInfo = () => {
+    if (window.localNetdataRegistry) return Promise.resolve()
+
+    return fetch(window.envSettings.agentApiUrl + "/api/v1/registry?action=hello", { cache: "no-cache", credentials: "include" })
+      .then(response => {
+        if (!response.ok) return Promise.reject({ message: defaultErrorMessage })
+        return response.json()
+      })
+      .then(data => {
+        if (!data) return Promise.reject({ message: "No registry data available." })
+
+        let to = data.cloud_base_url.lastIndexOf('/');
+        to = (to == -1 || to < data.cloud_base_url.length - 2) ? data.cloud_base_url.length : to;
+        let cloudUrl = data.cloud_base_url.substring(0, to);
+
+        let withoutNodes = btoa(JSON.stringify({
+          registry: data.registry,
+          machine_guid: data.machine_guid,
+          hostname: data.hostname,
+          agent: data.agent,
+          nodes: []
+        }))
+        let iframe = document.createElement('iframe');
+        iframe.src = data.registry + "/registry-access.html?x=" + withoutNodes + "&originUrl=" + window.envSettings.agentApiUrl;
+        iframe.style = { position: "absolute", left: "-99999999px" };
+        iframe.width = 0;
+        iframe.height = 0;
+        iframe.tabindex = -1;
+        iframe.title = "empty";
+        iframe.classList.add("hidden");
+        document.body.appendChild(iframe);
+
+        setTimeout(function () {
+          document.title = data.hostname + ': Netdata Agent Console';
+          iframe.contentWindow.postMessage(["netdata-registry", window.envSettings.agentApiUrl, data], "*")
+        }, 300);
+
+        window.addEventListener('message', function (event) {
+          if (event.source !== iframe.contentWindow) return;
+
+          if (event.data.status === "disabled") console.error("Your netdata registry is disabled! Check your configuration.")
+
+          if (event.data) {
+            if (!window.localNetdataRegistry) {
+              window.localNetdataRegistry = {}
+            }
+
+            window.localNetdataRegistry.pg = event.data.person_guid
+
+            if (!window.envSettings) {
+              window.envSettings = {}
+            }
+
+            window.envSettings.visitor = event.data.person_guid
+
+            try {
+              var visitedNodesByName = event.data.urls.reduce(function (vn, visitedUrl) {
+                vn[visitedUrl[4]] = vn[visitedUrl[4]] || {}
+                vn[visitedUrl[4]].id = visitedUrl[0]
+                vn[visitedUrl[4]].name = visitedUrl[4]
+                vn[visitedUrl[4]].lastAccessTime = visitedUrl[2]
+                vn[visitedUrl[4]].urls = vn[visitedUrl[4]].urls || []
+                vn[visitedUrl[4]].urls.push(visitedUrl[1])
+
+                return vn
+              }, {})
+
+              window.visitedNodes = Object.keys(visitedNodesByName).map(function (vn) {
+                return visitedNodesByName[vn]
+              })
+            } catch (e) {
+              // do nothing
+            }
+          }
+        });
+
+        return Promise.resolve()
+      })
+  }
+
+  const cloudRequest = async (endpoint, {allowAnonymous = false, ...options} = {}) => {
+    const cloudToken = localStorage.getItem(CLOUD_TOKEN_KEY)
+    if (!allowAnonymous && !cloudToken) return Promise.reject("No cloud token")
+
+    options = { ...options, headers: { ...(options?.headers || {}), ...(!!cloudToken && {Authorization: `Bearer ${cloudToken}`}) } }
+
+    return fetch(ensureOneSlash(`${window.envSettings.apiUrl}/${endpoint}`), options)
+  }
+
+  const sleep = (ms) => {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  const claimAgent = ({ key, token, rooms } = {}) => {
+    const url = window.envSettings.apiUrl;
+    let query = new URLSearchParams({ key, rooms, token, url }).toString()
+    query = key && rooms && token && url && query ? `?${query}` : ""
+    return fetch(ensureOneSlash(`${window.envSettings.agentApiUrl}/api/v3/claim${query}`)).then(response => {
+      const contentType = response.headers.get("content-type");
+
+      if (contentType && contentType.includes("text")) {
+        throw response.text();
+      }
+
+      if (contentType && contentType.includes("json")) {
+        return response.json();
+      }
+
+      throw new Error('Unsupported content type: ' + contentType);
+    }).then(data => {
+      if (data.success === false) {
+        throw data.message
+      }
+
+      if (key && data.can_be_claimed === false && !data.agent.nd) {
+        return sleep(1000).then(claimAgent);
+      }
+
+      return data
+    });
+  }
+
+  const checkMe = mg => {
+    return fetch(ensureOneSlash(`${window.envSettings.agentApiUrl}/api/v3/me`), {
+      headers: {
+        "X-Netdata-Auth": `Bearer ${localStorage.getItem(`agentJWT:${mg}`)}`
+      }
+    })
+      .then(response => response.json())
+      .catch(() => ({
+        auth: "none",
+        cloud_account_id: null,
+        client_name: "",
+        access: ["anonymous-data"],
+        user_role: "any",
+      }))
+  }
+
+  const fetchUserAccess = (mg, nd) => {
+    return cloudRequest(`/api/v1/agents/${mg}/user_agent_node_access?nodeID=${nd}`, {allowAnonymous: true}).then(response => response.json()).then(data => {
+      window.localNetdataRegistry.limitations = data.limitations ? {limit: data.limitations.limit || 99999999, customDashboardsLimit: data.limitations.custom_dashboards_limit || 99999999, windowsSupport: data.limitations.windows_support || false} : {limit: 99999999, customDashboardsLimit: 99999999, windowsSupport: true}
+
+      if (data.user_node_status === "noAccess") {
+        return data
+      }
+      window.localNetdataRegistry.spaceId = data.space_id
+
+      const room = data.rooms.find(r => r.untouchable)
+
+      window.localNetdataRegistry.roomId = room.id
+      window.localNetdataRegistry.room = room
+
+      return data
+    }).catch((err) => { })
+  }
+
+  const getAgentToken = ({ mg, nd, claimId }, agent) => {
+    return cloudRequest(`/api/v2/bearer_get_token?node_id=${nd}&claim_id=${claimId}&machine_guid=${mg}`).then(response => {
+      if (response.status === 401) {
+        signout()
+        return
+      }
+      if (!response.ok) {
+        // Parse the error response to extract the message
+        return response.json().then(errorData => {
+          throw new Error(errorData.errorMessage);
+        });
+      }
+      return response.json();
+    }).then(data => {
+      if (data && data.token) {
+        localStorage.setItem(`agentJWT:${mg}`, data?.token)
+        localStorage.setItem(`agentJWTExp:${mg}`, data?.expiration)
+      }
+      return data
+    }).catch((err) => {
+      const message = err && err.message || "Something went wrong. Please try again."
+
+      const msgSignIn = document.getElementById("msgSignIn");
+      msgSignIn.textContent = message
+
+      const btnSignIn = document.getElementById("btnSignIn");
+      btnSignIn.style.display = "none"
+
+      setupOptOutMessage(agent)
+    })
+  }
+
+  const setupOptOutMessage = agent => {
+    const bearerProtection = agent.api.bearer_protection;
+
+    const isWindows = (agent.application.os.kernel || "").toLowerCase() === "windows"
+    const lockWindows = isWindows && (!window.localNetdataRegistry.limitation || window.localNetdataRegistry.limitations.windowsSupport === false);
+
+    const denyAnonymousAccess = bearerProtection || lockWindows;
+
+    // Get all elements with the "opt-out-link" class
+    const optOutLinkElems = document.getElementsByClassName("opt-out-link");
+    if (optOutLinkElems.length > 0) {
+      for (let i = 0; i < optOutLinkElems.length; i++) {
+        optOutLinkElems[i].style.display = denyAnonymousAccess ? "none" : "inline";
+      }
+    }
+
+    // Get all elements with the "no-anonymous-access" class
+    const anonymousAccessDeniedElems = document.getElementsByClassName("no-anonymous-access");
+    if (anonymousAccessDeniedElems.length > 0) {
+      for (let i = 0; i < anonymousAccessDeniedElems.length; i++) {
+        if (anonymousAccessDeniedElems[i].textContent === "") {
+          anonymousAccessDeniedElems[i].innerHTML = bearerProtection ? "Anonymous access is not allowed. Bearer protection is enabled.<br />Please sign in to continue." : "Anonymous access to the dashboard of Windows nodes is not allowed.<br />Please sign in to continue.";
+        }
+        anonymousAccessDeniedElems[i].style.display = denyAnonymousAccess ? "inline" : "none";
+      }
+    }
+  }
+
+  const createClaimingToken = spaceId => {
+    if (!spaceId) return Promise.resolve();
+    toggleClaimingTokenLoadingState(true);
+    return cloudRequest(`/api/v1/spaces/${spaceId}/token`).then(response => {
+      toggleClaimingTokenLoadingState(false);
+      return response.json();
+    });
+  }
+
+  const getClaimingToken = async spaceId => {
+    if (!spaceId) return Promise.resolve();
+    const cachedToken = state.cache.claimingTokensPerSpace[spaceId];
+    if (cachedToken) return Promise.resolve(cachedToken);
+    const token = await createClaimingToken(spaceId);
+    cacheClaimingToken(spaceId, token);
+    return Promise.resolve(token);
+  }
+
+  const fetchSpaces = () => {
+    toggleSpacesLoadingState(true);
+    return cloudRequest("/api/v3/spaces").then(response => {
+      toggleSpacesLoadingState(false);
+      return response.json();
+    });
+  }
+
+  const getSpaces = async () => {
+    const cachedSpaces = state.cache.spaces;
+    if (cachedSpaces) return Promise.resolve(cachedSpaces);
+    const spaces = await fetchSpaces();
+    cacheSpaces(spaces);
+    return Promise.resolve(spaces);
+  }
+
+  const fetchSpaceRooms = spaceId => {
+    if (!spaceId) return Promise.resolve([])
+    toggleRoomsLoadingState(true);
+    return cloudRequest(`/api/v2/spaces/${spaceId}/rooms?show_all=true&default=false`).then(response => {
+      toggleRoomsLoadingState(false);
+      return response.json();
+    })
+  }
+
+  const getSpaceRooms = async spaceId => {
+    if (!spaceId) return Promise.resolve([]);
+    const cachedRooms = state.cache.rooms[spaceId];
+    if (cachedRooms) return Promise.resolve(cachedRooms);
+    const rooms = await fetchSpaceRooms(spaceId);
+    cacheRooms(spaceId, rooms);
+    return Promise.resolve(rooms);
+  }
+
+  const updateSelectedOptions = root => {
+    if (!root) return;
+    const checkboxes = root.querySelectorAll('.dropdown > .checkbox-container input[type="checkbox"]');
+    const selected = Array.from(checkboxes)
+      .filter((checkbox) => checkbox.checked)
+      .map((checkbox) => ({ value: checkbox.value, name: checkbox.dataset.name }));
+
+    const selectedNames = selected.map(({ name }) => name);
+    const selectedValues = selected.map(({ value }) => value);
+
+    const selectedSpaceIds = state.claim.selectedSpaceIds;
+    const spaces = state.cache.spaces;
+    const selectedSpaceName = selectedSpaceIds.length ? spaces.find(({ id }) => id == selectedSpaceIds[0])?.name : null;
+
+    const dropdownChangeEvent = new CustomEvent("dropdownChange", { detail: { values: selectedValues } });
+    root.dispatchEvent(dropdownChangeEvent);
+
+    root.querySelector("#selectedItems").textContent =
+      selectedNames.length > 0 ? selectedNames.join(", ") : "Select Rooms";
+
+    const target = document.getElementById(root.dataset.target);
+    target.textContent =
+      selected.length > 0
+        ? `You are ready to connect your agent to room(s): ${selectedNames.join(
+          ", "
+        )}${selectedSpaceName ? ` of ${selectedSpaceName} space` : ""}`
+        : "";
+  }
+
+  const bindDropdownOptions = () => {
+    document.querySelectorAll(".dropdown-custom").forEach(root => {
+      root.querySelectorAll(".nd-checkbox > input").forEach(input => {
+        input.addEventListener("change", () => updateSelectedOptions(root));
+      });
+    });
+  }
+
+  const buildRoomsList = (rooms = []) => {
+    const container = document.getElementById("roomsSelectorOptionsContainer");
+    if (container) {
+      container.innerHTML = "";
+      rooms.forEach(({ id, name }) => {
+        const isDefaultSelected = name === "All nodes"
+
+        if (isDefaultSelected) {
+          setSelectedRoomsStatus(id)
+        }
+
+        const label = createElem("label", { classList: "nd-checkbox" });
+        const input = createElem("input", { type: "checkbox", value: id, checked: isDefaultSelected });
+        input.dataset.name = name;
+        input.onchange = e => {
+          setSelectedRoomsStatus(prev => {
+            if (e.target.checked) return [...prev, id];
+            return prev.filter(r => r != id);
+          });
+        }
+
+        const span = createElem("span", { classList: "checkmark" });
+        const text = document.createTextNode(name);
+
+        label.appendChild(input);
+        label.appendChild(span);
+        label.appendChild(text);
+        container.appendChild(label);
+      });
+
+      bindDropdownOptions();
+    }
+  }
+
+  const buildSpacesList = (spaces = []) => {
+    const container = document.getElementById("spacesList");
+    if (container) {
+      container.innerHTML = "";
+      spaces.forEach(({ id, name, permissions = [] }) => {
+        if (!permissions.includes("node:Create")) return
+
+        const listItem = createElem("li");
+        listItem.innerText = name;
+        listItem.className = "space-item";
+        listItem.dataset.id = id;
+        listItem.onclick = async () => {
+          document.querySelectorAll(".space-item").forEach(item => item.classList.remove("selected"));
+          listItem.classList.add("selected");
+          setSelectedSpacesStatus([id]);
+        };
+        container.appendChild(listItem);
+      });
+    }
+    return Promise.resolve();
+  }
+
+  const initCustomDropdown = () => {
+    const toggleDropdown = e => {
+      if (!e.currentTarget) return;
+      const checkboxContainer = e.currentTarget.querySelector(".checkbox-container");
+      if (checkboxContainer) {
+        checkboxContainer.style.display = checkboxContainer.style.display === "block" ? "none" : "block";
+      }
+    }
+
+    const clearSelection = e => {
+      if (!e.currentTarget) return;
+      const root = e.currentTarget.closest(".dropdown-custom");
+      if (root) {
+        const checkboxes = root.querySelectorAll('.dropdown > .checkbox-container input[type="checkbox"]');
+        checkboxes.forEach((checkbox) => (checkbox.checked = false));
+        updateSelectedOptions(root);
+      }
+    }
+
+    document.querySelectorAll(".dropdown-custom").forEach(root => {
+      const btnClear = root.querySelector(".clear-button");
+      const dropdown = root.querySelector(".dropdown");
+      if (dropdown) {
+        if (btnClear) {
+          btnClear.addEventListener("click", clearSelection);
+        }
+        dropdown.addEventListener("click", toggleDropdown);
+      }
+    });
+
+    document.addEventListener("click", (e) => {
+      document.querySelectorAll(".dropdown-custom").forEach(dropdown => {
+        const checkboxContainer = dropdown.querySelector(".checkbox-container");
+        if (dropdown && checkboxContainer && !dropdown.contains(e.target)) {
+          checkboxContainer.style.display = "none";
+        }
+      });
+    });
+
+    return Promise.resolve();
+  }
+
+  const initClaimingElements = () => {
+    const claimCommand = document.getElementById("claimCommand");
+    const claimTip = document.getElementById("claimTip");
+    const btnPrev = document.getElementById("btnConnectionStepPrev");
+    const btnNext = document.getElementById("btnConnectionStepNext");
+    const btnClaim = document.getElementById("btnClaim");
+    const claimingPrivateKey = document.getElementById("claimingPrivateKey");
+
+    if (claimCommand && !!state.claim?.status?.command) {
+      claimCommand.innerText = state.claim.status.command;
+    }
+
+    if (claimTip && !!state.claim?.status?.key_filename) {
+      claimTip.innerText = `Tip: If the command doesn’t work out-of-the-box, locate the ${state.claim.status.key_filename} file, open it in your favourite text editor, and copy it to your clipboard.`;
+    }
+
+    if (btnPrev) {
+      btnPrev.addEventListener("click", () => {
+        setClaimingStep(prev => prev - 1);
+      });
+    }
+
+    if (btnNext) {
+      btnNext.addEventListener("click", async () => {
+        const newStep = await setClaimingStep(prev => prev + 1);
+        if (newStep == 2 && !!state.claim.selectedSpaceIds.length) {
+          const spaceId = state.claim.selectedSpaceIds[0];
+          const rooms = await getSpaceRooms(spaceId);
+          buildRoomsList(rooms);
+          await getClaimingToken(spaceId);
+        }
+      });
+    }
+
+    if (btnClaim) {
+      btnClaim.addEventListener("click", async () => {
+        toggleClaimingAgentLoadingState(true);
+        await setClaimResponseState({});
+        const { selectedSpaceIds, selectedRoomIds, privateKey } = state.claim;
+        const { token } = selectedSpaceIds.length ? state.cache.claimingTokensPerSpace[selectedSpaceIds[0]] || {} : {};
+
+        let didCatch = false;
+        const data = await claimAgent({ key: privateKey, token, rooms: selectedRoomIds }).catch(err => {
+          didCatch = true;
+          setClaimResponseState({ error: err.message });
+        })
+
+        if (data === "invalid key") {
+          didCatch = true;
+          setClaimResponseState({ error: "Invalid key" });
+        }
+        toggleClaimingAgentLoadingState(false);
+
+        if (didCatch) return;
+
+        if (data) {
+          if (data.success) {
+            window.location.reload();
+          } else {
+            setClaimResponseState(data);
+          }
+        }
+      });
+    }
+
+    if (claimingPrivateKey) {
+      claimingPrivateKey.addEventListener("input", e => setClaimingPrivateKeyState(e.target.value));
+    }
+  }
+
+  const setClaimStatus = async () => {
+    const status = await claimAgent();
+    const claimStatus = {
+      command: status.cmd || `sudo cat ${status.key_filename}`,
+      ...status
+    };
+    await setClaimStatusState(claimStatus);
+    return Promise.resolve();
+  }
+
+  const prepareClaiming = async agent => {
+    await setClaimStatus();
+    setupOptOutMessage(agent)
+    const spaces = await getSpaces();
+    await buildSpacesList(spaces);
+    initCustomDropdown();
+    initClaimingElements();
+    syncUI();
+  }
+
+  const startLoading = () => {
+    const body = document.body;
+    if (body) {
+      body.classList.add("loading");
+    }
+  }
+
+  const stopLoading = () => {
+    const body = document.body;
+    if (body) {
+      body.classList.remove("loading");
+      window.dispatchEvent(new Event("resize"));
+    }
+  }
+
+  const showErrorMessage = (message = defaultErrorMessage) => {
+    const messageContainer = document.getElementById("loadingMessage");
+    if (messageContainer) {
+      messageContainer.innerHTML = message;
+      startLoading();
+    }
+  }
+
+  const initMetrics = data => {
+    if (!data?.agents?.[0]) return Promise.reject({ message: "No agent data available." })
+
+    const setPercentageBarWidth = (containerId, percent) => {
+      const container = document.getElementById(containerId);
+      if (container) {
+        const percentageContainer = document.createElement("div");
+        percentageContainer.className = "percentage-container";
+
+        const percentageBar = document.createElement("div");
+        percentageBar.className = "percentage-bar";
+        percentageBar.style.width = percent + "%";
+
+        const percentageText = document.createElement("div");
+        percentageText.className = "percentage-text";
+        percentageText.innerText = percent + "%"; // Display the rounded percentage value with "%"
+
+        // Calculate the right position dynamically, capped at 96%
+        const rightPosition = Math.min(100 - percent, 96) + "%";
+        percentageText.style.right = rightPosition;
+
+        percentageContainer.appendChild(percentageBar);
+        percentageContainer.appendChild(percentageText); // Append the percentage text
+
+        container.appendChild(percentageContainer);
+      }
+    }
+
+    const units = ["", "K", "M", "B", "T", "P", "E"]
+
+    const abbreviateNumber = number => {
+      if (!number) return 0
+    
+      const tier = (Math.log10(Math.abs(number)) / 3) | 0
+    
+      if (!tier) return number
+    
+      const suffix = units[tier]
+      const scale = Math.pow(10, tier * 3)
+      const scaled = number / scale
+      return scaled.toFixed(1) + suffix
+    }
+
+    const formatBytes = (bytes) => {
+      if (bytes === 0) return "0 Bytes";
+      const k = 1024,
+        sizes = ["Bytes", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"],
+        i = Math.floor(Math.log(bytes) / Math.log(k));
+      return (
+        parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i]
+      );
+    }
+
+    const formatLargeNumbers = (number) => {
+      return number.toLocaleString();
+    }
+
+    const formatTimestamp = (timestamp) => {
+      const date = new Date(timestamp * 1000);
+      const months = [
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
+      ];
+      const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      const day = days[date.getUTCDay()];
+      const month = months[date.getUTCMonth()];
+      const year = date.getUTCFullYear();
+      const hours = date.getUTCHours().toString().padStart(2, "0");
+      const minutes = date.getUTCMinutes().toString().padStart(2, "0");
+      const seconds = date.getUTCSeconds().toString().padStart(2, "0");
+
+      return `${month} ${date.getUTCDate()}, ${year} ${hours}:${minutes}:${seconds}`;
+    }
+
+    const formatDuration = (seconds, short = false) => {
+      if (seconds <= 0) return "0 seconds";
+      const days = Math.floor(seconds / (24 * 3600));
+      const hours = Math.floor((seconds % (24 * 3600)) / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      const remainingSeconds = seconds % 60;
+
+      if (short) {
+        if (days > 3) {
+          return days + " days";
+        } else if (days > 0) {
+          return days * 24 + hours + " hours";
+        }
+      }
+
+      const parts = [];
+      if (days > 0) parts.push(days + " day" + (days > 1 ? "s" : ""));
+      if (hours > 0) parts.push(hours + " hour" + (hours > 1 ? "s" : ""));
+      if (minutes > 0)
+        parts.push(minutes + " minute" + (minutes > 1 ? "s" : ""));
+      if (remainingSeconds > 0)
+        parts.push(
+          remainingSeconds + " second" + (remainingSeconds > 1 ? "s" : "")
+        );
+      return parts.join(" • ");
+    }
+
+    const createKeyValuePairs = (
+      containerId,
+      dataObject,
+      keys = null,
+      shortFormat = false,
+      usePercentageBar = false
+    ) => {
+      const container = document.getElementById(containerId);
+      if (!container) return;
+      if (dataObject === null || typeof dataObject !== "object") return
+
+      container.innerHTML = ""; // Clear the container
+
+      const keysToUse = keys || Object.keys(dataObject);
+
+      keysToUse.forEach(function (key) {
+        if (dataObject.hasOwnProperty(key)) {
+          let value = dataObject[key].toString();
+          if (value === "false") return;
+
+          if (key === "cpu_frequency") {
+            value = (dataObject[key] / 1e9).toFixed(2) + " GHz";
+          } else if (
+            key === "ram" ||
+            key === "disk" ||
+            key === "disk_used" ||
+            key === "disk_max"
+          ) {
+            value = formatBytes(dataObject[key]);
+          } else if (
+            key === "samples" ||
+            key === "currently_collected_metrics"
+          ) {
+            value = formatLargeNumbers(dataObject[key]);
+          } else if (key === "from" || key === "to") {
+            value = formatTimestamp(dataObject[key]);
+          } else if (
+            key === "retention" ||
+            key === "expected_retention" ||
+            key === "requested_retention"
+          ) {
+            value = formatDuration(dataObject[key], shortFormat);
+          } else if (key === "disk_percent") {
+            const roundedValue = Math.round(dataObject[key]); // Round the percentage value
+            if (usePercentageBar) {
+              setPercentageBarWidth(containerId, roundedValue);
+              return; // No need to create key-value pair for percentage bar
+            } else {
+              value = roundedValue + "%"; // Append "%" to the rounded value
+            }
+          }
+
+          const div = getDOM({
+            tag: "div",
+            classList: "key-value",
+            children: [
+              {
+                tag: "span",
+                innerText: key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, " ")
+              },
+              {
+                tag: "span",
+                innerText: value,
+                condition: value !== "true"
+              }
+            ]
+          });
+
+          container.appendChild(div);
+        }
+      });
+    }
+
+    const setupCollectedMetrics = data => {
+      const agent = data?.agents?.[0]
+      const metricsFromDbSize = agent?.db_size?.[0]?.currently_collected_metrics
+      const collectedMetrics = metricsFromDbSize !== undefined ? metricsFromDbSize : agent?.metrics?.collected;
+      const container = document.getElementById("collectedMetrics");
+      if (collectedMetrics === undefined || !container) return;
+
+      const div = getDOM({
+        tag: "div",
+        classList: "key-value",
+        children: [
+          {
+            tag: "span",
+            innerText: "Collected Metrics"
+          },
+          {
+            tag: "span",
+            innerText: collectedMetrics > 99999 ? abbreviateNumber(collectedMetrics) : formatLargeNumbers(collectedMetrics),
+            // ...(collectedMetrics > 99999 ? { dataset: { tooltip: formatLargeNumbers(collectedMetrics) } } : {})
+          }
+        ]
+      });
+
+      container.appendChild(div);
+    }
+
+    const buildTier = ({
+      tier: index,
+      granularity,
+      metrics,
+      samples,
+      retention_human,
+      expected_retention_human,
+      requested_retention_human,
+      disk_used,
+      disk_percent,
+      disk_max,
+      ...rest
+    }) => {
+      const disk_used_exists = disk_used !== null && !isNaN(disk_used)
+      const disk_max_exists = disk_max !== null && !isNaN(disk_max)
+
+      const contentsStructure = {
+        tag: "tr",
+        children: [
+          {
+            tag: "td",
+            classList: "cell-data",
+            textContent: index
+          },
+          {
+            tag: "td",
+            classList: "cell-data",
+            textContent: granularity
+          },
+          {
+            tag: "td",
+            classList: "cell-data section-start",
+            children: [
+              {
+                tag: "span",
+                textContent: abbreviateNumber(metrics),
+                // dataset: { tooltip: formatLargeNumbers(metrics) }
+              }
+            ]
+          },
+          {
+            tag: "td",
+            classList: "cell-data",
+            children: [
+              {
+                tag: "span",
+                textContent: abbreviateNumber(samples),
+                // dataset: { tooltip: formatLargeNumbers(samples) }
+              }
+            ]
+          },
+          {
+            tag: "td",
+            classList: "cell-data section-start",
+            textContent: retention_human || "-"
+          },
+          {
+            tag: "td",
+            classList: "cell-data",
+            textContent: expected_retention_human || "-"
+          },
+          {
+            tag: "td",
+            classList: "cell-data",
+            textContent: requested_retention_human || "-"
+          },
+          {
+            tag: "td",
+            classList: "cell-data section-start",
+            children: [
+              {
+                className: "progress-indicator flex flex-col",
+                children: [
+                  {
+                    tag: "span",
+                    textContent: disk_used_exists ? formatBytes(disk_used) : "-"
+                  },
+                  ...(disk_used_exists ? [{
+                    className: "progress-bar-container",
+                    children: [
+                      {
+                        className: "progress-bar",
+                        dataset: {
+                          fill: disk_percent
+                        }
+                      }
+                    ]
+                  }] : [])
+                ]
+              }
+            ]
+          },
+          {
+            tag: "td",
+            classList: "cell-data",
+            textContent: disk_max_exists ? formatBytes(disk_max) : "-"
+          }
+        ]
+      }
+
+      return getDOM(contentsStructure);
+    }
+
+    const buildTiers = () => {
+      const tiers = data.agents[0].db_size || [];
+      const placeholder = document.getElementById("tiers-table-data-placeholder");
+      if (placeholder && !!tiers.length) {
+        const rows = tiers.map(buildTier)
+        placeholder.replaceWith(...rows);
+      }
+
+      return Promise.resolve()
+    }
+
+    const setupProgressBars = () => {
+      document.querySelectorAll(".progress-bar").forEach(el => {
+        const fill = el.dataset.fill
+        el.style.width = `${fill}%`
+      })
+    }
+
+    createKeyValuePairs("kernel", data.agents[0].application.os, [
+      "kernel",
+    ]);
+    createKeyValuePairs("kernelVersion", data.agents[0].application.os, [
+      "kernel_version",
+    ]);
+    createKeyValuePairs("id", data.agents[0].application.os, ["id"]);
+    createKeyValuePairs("os", data.agents[0].application.os, ["os"]);
+
+    createKeyValuePairs("package", data.agents[0].application.package, [
+      "version",
+    ]);
+    createKeyValuePairs(
+      "directories",
+      data.agents[0].application.directories
+    );
+    createKeyValuePairs("server", data.agents[0], ["nm"]);
+    createKeyValuePairs("cpuCores", data.agents[0].application.hw, [
+      "cpu_cores",
+    ]);
+    createKeyValuePairs("cpuFrequency", data.agents[0].application.hw, [
+      "cpu_frequency",
+    ]);
+    createKeyValuePairs("ram", data.agents[0].application.hw, ["ram"]);
+    createKeyValuePairs("disk", data.agents[0].application.hw, ["disk"]);
+    createKeyValuePairs("cpuArchitecture", data.agents[0].application.hw, [
+      "cpu_architecture",
+    ]);
+    createKeyValuePairs("virtualization", data.agents[0].application.hw, [
+      "virtualization",
+    ]);
+    createKeyValuePairs("cloud_status", data.agents[0].cloud, ["status"]);
+    createKeyValuePairs("nodes_streaming", data.agents[0].nodes);
+    createKeyValuePairs("plugins", data.agents[0].application.plugins);
+    createKeyValuePairs("libs", data.agents[0].application.libs);
+    createKeyValuePairs("exporters", data.agents[0].application.exporters);
+    setupCollectedMetrics(data);
+
+    buildTiers().then(() => setupProgressBars())
+
+    return Promise.resolve();
+  }
+
+  const initTooltips = () => {
+    const tooltip = document.getElementById("tooltip");
+    if (!tooltip) return;
+
+    document.querySelectorAll("[data-tooltip]").forEach(elem => {
+      elem.addEventListener("mouseenter", () => {
+        const content = elem.dataset.tooltip;
+        const rect = elem.getBoundingClientRect();
+        const top = rect.bottom + 10;
+        const left = rect.x;
+        tooltip.textContent = content;
+        tooltip.style.top = `${top}px`;
+        tooltip.style.left = `${left}px`;
+        tooltip.style.display = "block";
+      });
+
+      elem.addEventListener("mouseleave", () => {
+        tooltip.textContent = "";
+        tooltip.style.display = "none";
+      })
+    })
+  }
+
+  /**
+   * Get agent info and initialize splash screen
+   */
+  const initSplashScreen = async () => {
+    const msgSignIn = document.getElementById("msgSignIn");
+    const btnSignIn = document.getElementById("btnSignIn");
+    msgSignIn.textContent = "Please wait..."
+    btnSignIn.style.display = "none"
+
+    const agentInfo = await getAgentInfo()
+
+    if (!agentInfo || !Array.isArray(agentInfo.agents) || !agentInfo.agents[0]) return Promise.reject({ message: "No agent data available." })
+
+    const agent = (agentInfo?.agents || [])[0] || {}
+    const status = agent.cloud && agent.cloud.status
+    const claimId = agent.cloud && agent.cloud.claim_id
+    const cloudUrl = agent.cloud && agent.cloud.url
+
+    window.localNetdataRegistry = {
+      hostname: agent.nm,
+      mg: agent.mg,
+      nd: agent.nd,
+      claimId: claimId,
+      xNetdataAuthHeader: true
+    }
+
+    window.envSettings.cloudUrl = cloudUrl || window.envSettings.cloudUrl
+    window.envSettings.apiUrl = cloudUrl || window.envSettings.apiUrl
+
+    const isCloudSignedIn = !!localStorage.getItem(CLOUD_TOKEN_KEY)
+
+    if (!isCloudSignedIn) {
+      msgSignIn.style.display = "inline"
+      msgSignIn.textContent = "Please sign-in to continue"
+      btnSignIn.style.display = "block"
+    }
+
+    initMetrics(agentInfo)
+
+    if (!claimId && isCloudSignedIn && !window.envSettings.isLocal) {
+      setShouldClaimStatus(true);
+      prepareClaiming(agent)
+      return Promise.resolve({ stopLoading: true })
+    }
+
+    let me = await checkMe(agent.mg)
+
+    if (isCloudSignedIn && agent.nd && (me.auth === "none" || me.auth === "god")) {
+      await getAgentToken({ mg: agent.mg, nd: agent.nd, claimId: agent.cloud.claim_id }, agent)
+      me = await checkMe(agent.mg)
+    }
+
+    const claimStatusesToProceed = ["online", "indirect", "offline"]
+
+    if ((me.auth === "bearer" || me.auth === "god") && claimStatusesToProceed.includes(status)) {
+      await fetchUserAccess(agent.mg, agent.nd)
+      return loadDashboard()
+    } else if (window.envSettings.isLocal) {
+      return loadDashboard()
+    } else {
+      await fetchUserAccess(agent.mg, agent.nd)
+    }
+
+    if (!isCloudSignedIn) {
+      setupOptOutMessage(agent)
+      return Promise.resolve({ stopLoading: true })
+    }
+
+    return Promise.resolve()
+  }
+
+  // =============================================== //
+
+  document.addEventListener("DOMContentLoaded", () => {
+    initGrid();
+    initPrimaryButtonHover();
+    toggleTab(1);
+    initTabs();
+
+    fetchRegistryInfo().then(initSplashScreen).then(data => {
+      if (data?.stopLoading) {
+        stopLoading()
+      }
+      initTooltips()
+    }).catch(err => {
+      showErrorMessage(err?.message)
+    })
+  });</script></html>
